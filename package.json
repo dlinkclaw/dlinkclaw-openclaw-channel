@@ -1,0 +1,95 @@
+{
+  "name": "dlinkclaw-openclaw",
+  "version": "2026.8.24-alpha.5",
+  "description": "DLinkClaw OpenClaw channel plugin — 朵联 OpenClaw 接入通道",
+  "keywords": [
+    "DLinkClaw",
+    "openclaw",
+    "朵联",
+    "钉钉",
+    "QQ",
+    "企业微信",
+    "飞书"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc && terser dist/index.js --output dist/index.js --compress --mangle --module",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "license": "MIT",
+  "author": "rock.chen<szygnet@qq.com>",
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "main": "./index.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "skills",
+    "ext_capabilities",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "dependencies": {
+    "axios": "^1.15.2",
+    "file-type": "^21.3.1",
+    "form-data": "^4.0.5",
+    "mime-types": "^3.0.2",
+    "mqtt": "^5.10.0",
+    "qrcode-terminal": "^0.12.0",
+    "uuid": "^14.0.2",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/mime-types": "^3.0.1",
+    "@types/ws": "^8.18.1",
+    "terser": "^5.46.1",
+    "typescript": "^5.3.3"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.7.1"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "installDependencies": true,
+    "channel": {
+      "id": "dlink",
+      "label": "朵联 DLinkClaw",
+      "selectionLabel": "朵联(DLinkClaw)",
+      "docsPath": "/channels/dlinkclaw-openclaw",
+      "docsLabel": "dlinkclaw-openclaw",
+      "blurb": "朵联 DLinkClaw OpenClaw 接入通道, 本地部署连接朵联客户端, 支持企业微信、QQ、钉钉、飞书, 无需公网IP.",
+      "aliases": [
+        "dlink",
+        "DLinkClaw",
+        "朵联"
+      ],
+      "order": 90,
+      "quickstartAllowFrom": true,
+      "isDebug": true,
+      "preferSessionLookupForAnnounceTarget": true
+    },
+    "install": {
+      "npmSpec": "dlinkclaw-openclaw",
+      "localPath": "extensions/dlinkclaw-openclaw",
+      "defaultChoice": "npm"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dlinkclaw/openclaw-channel-plugin.git"
+  },
+  "homepage": "https://github.com/dlinkclaw/openclaw-channel-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/dlinkclaw/openclaw-channel-plugin/issues"
+  }
+}

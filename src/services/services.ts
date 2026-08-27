@@ -1,0 +1,1180 @@
+/**
+ * Claw-Services 主服务接口
+ * 为 duolian 插件提供 OpenClaw API 封装
+ */
+
+
+import EventEmitter from 'events';
+import { exec, spawn } from 'child_process';
+import { promisify } from 'util';
+import fs from 'fs';
+import path from 'path';
+import { AgentCreateParams, AgentSummary, AgentUpdateParams, AskAgentParams, ClawServiceOptions, CmdMessage, CmdParamsPatchSessionEntry, CmdResponse, CmdType, CronListResponse, SystemSummary, TaskSummary } from './types.js';
+import type {
+  ArtifactGetParams, ArtifactDownloadParams,
+  AgentFilesListParams, AgentFilesGetParams,
+} from './types.js';
+import WSClient from './ws-client.js';
+import { PluginLogger } from 'openclaw/plugin-sdk';
+import { getOpenclawPath, getExtCapabilitiesDir } from '../utils.js';
+import { applyModelOverrideToSessionEntry } from 'openclaw/plugin-sdk/model-session-runtime';
+import { getSessionEntry, patchSessionEntry, resolveStorePath } from 'openclaw/plugin-sdk/config-runtime';
+import { approveChannelPairingCode } from 'openclaw/plugin-sdk/conversation-runtime';
+import { DEFAULT_ACCOUNT_ID } from 'openclaw/plugin-sdk/core';
+import { markRunStopped } from '../runtime.js';
+
+
+
+/**
+ * Claw-Services 主类
+ * 处理 CMD 消息并调用相应的 OpenClaw API
+ */
+export class ClawServices extends EventEmitter {
+  private client: WSClient | null = null;
+  private readonly options: ClawServiceOptions;
+  private isInitialized = false;
+  private readonly logger: PluginLogger;
+  constructor(options: ClawServiceOptions, logger: PluginLogger) {
+    super();
+    this.options = options;
+    this.logger = logger;
+  }
+
+  log(msg: string, type: 'info' | 'warn' | 'error' | 'debug') {
+    switch (type) {
+      case 'info':
+        this.logger.info(`✅ CmdService ${msg}`);
+        break;
+      case 'warn':
+        this.logger.warn(`❗️CmdService ${msg}`);
+        break;
+      case 'error':
+        this.logger.error(`❌️ CmdService ${msg}`);
+        break;
+      case 'debug':
+        if (this.logger.debug) {
+          this.logger.debug(`〰️ CmdService ${msg}`)
+        } else {
+          console.debug(`〰️ CmdService ${msg}`)
+        }
+    }
+  }
+
+  /**
+   * 初始化服务
+   */
+  async initialize(): Promise<boolean> {
+    if (this.isInitialized) {
+      return true;
+    }
+    const channelId = this.options.channelId;
+    try {
+      this.client = new WSClient({
+        gatewayUrl: this.options.gatewayUrl,
+        token: this.options.token
+      });
+
+      this.client!.on('onConnected', () => {
+        this.log(`ws连接成功`, 'info');
+        this.emit('onConnectState', true);
+      });
+      this.client!.on('onDisconnect', () => {
+        this.log(`ws连接已断开,5秒后重连...`, 'warn');
+        this.emit('onConnectState', false);
+        setTimeout(() => this.client?.connect(), 5000);
+      });
+      this.client!.on('onTick', (message) => {
+        this.log(`onTick >>> ${message.ts}`, 'debug')
+        message.channel = channelId;
+        this.emit('onTick', message);
+      })
+      this.client!.on('onHealth', (message) => {
+        message.channel = channelId;
+        this.emit('onHealth', message)
+      });
+      this.client!.on('onHandshaked', (message) => {
+        // WS 握手成功后订阅会话变更事件，实时感知归档/恢复/删除/新建
+        this.client?.subscribeSessions()
+          .then(() => this.log('已订阅 sessions.changed 事件', 'info'))
+          .catch((e) => this.log(`订阅 sessions.changed 失败: ${e}`, 'warn'));
+        this.emit('onHandshaked', message)
+      })
+      this.client.on('onAgentReply', (message) => this.emit('onAgentReply', message))
+      this.client.on('onAgentChat', (message) => this.emit('onAgentChat', message))
+
+      this.client.on('onCron', (message) => this.emit('onCron', message))
+      this.client.on('onShutdown', (message) => this.emit('onShutdown', message));
+      this.client.on('onSessionsChanged', (message) => this.emit('onSessionsChanged', message));
+      this.client.on('onSessionMessage', (message) => this.emit('onSessionMessage', message));
+      this.client.on('onHeartbeat', (message) => this.emit('onHeartbeat', message));
+
+
+
+      this.client!.on('onError', (error) => {
+        this.log('发生错误:' + String(error), 'error');
+        this.emit('error', error)
+      })
+
+      await this.client.connect();
+      this.isInitialized = true;
+
+      return true;
+    } catch (error) {
+      this.log('❌ Claw-Services 初始化失败:' + String(error), 'error');
+      this.isInitialized = false;
+      throw error;
+    }
+  }
+
+  /**
+   * 检查服务是否已初始化
+   */
+  isReady(): boolean {
+    return this.isInitialized && (this.client?.isReady() || false);
+  }
+
+  /**
+   * 处理 CMD 消息
+   */
+  async handleCmdMessage(cmdMessage: CmdMessage): Promise<CmdResponse> {
+    if (!this.isReady()) {
+      throw new Error('Claw-Services 未初始化');
+    }
+    const startTime = Date.now();
+    try {
+      let result: any;
+      // 根据命令类型调用相应的 API
+      switch (cmdMessage.cmd as CmdType) {
+        // Agent管理
+        case 'agent.ask':
+          result = await this.handleAskAgent(cmdMessage.params! as AskAgentParams);
+          break;
+        case 'agent.list':
+          result = await this.handleAgentList();
+          break;
+        case 'agent.create':
+          const agentId = cmdMessage.params!['id'];
+          const agentList = await this.handleAgentList();
+          if (agentList && agentList.length > 0) {
+            const hasAgent = agentList.find(rec => rec.id === agentId);
+            if (hasAgent) {
+              result = hasAgent;
+            }
+          }
+          if (!result) {
+            result = await this.handleAgentCreate(cmdMessage.params!);
+          }
+          break;
+        case 'agent.update':
+          result = await this.handleAgentUpdate(cmdMessage.params!);
+          break;
+        case 'agent.delete':
+          result = await this.handleAgentDelete(cmdMessage.params);
+          break;
+        case 'agent.get':
+          result = await this.handleAgentGet(cmdMessage.params);
+          break;
+
+        // 任务管理
+        case 'task.list':
+          result = await this.handleTaskList(cmdMessage.params);
+          break;
+        case 'task.create':
+          result = await this.handleTaskCreate(cmdMessage.params);
+          break;
+        case 'task.update':
+          result = await this.handleTaskUpdate(cmdMessage.params);
+          break;
+        case 'task.delete':
+          result = await this.handleTaskDelete(cmdMessage.params);
+          break;
+        case 'task.run':
+          result = await this.handleTaskRun(cmdMessage.params);
+          break;
+
+        // 状态监控命令
+        case 'status.health':
+          result = await this.handleStatusHealth();
+          break;
+        case 'status.system':
+          result = await this.handleStatusSystem();
+          break;
+        case 'status.usage':
+          result = await this.handleStatusUsage();
+          break;
+
+        // 模型管理
+        case 'models.list':
+          result = await this.handleListModels();
+          break;
+
+        // 会话 
+        case 'sessions.list':
+          result = await this.handleSessionList(cmdMessage.params!)
+          break;
+        case 'sessions.get':
+          result = await this.handleSessionGet(cmdMessage.params!);
+          break;
+        case 'sessions.describe':
+          result = await this.handleSessionsDescribe(cmdMessage.params!);
+          break;
+        case 'sessions.resolve':
+          result = await this.handleSessionsResolve(cmdMessage.params!);
+          break;
+        case 'sessions.create':
+          result = await this.handleSessionCreate(cmdMessage.params!);
+          break;
+        case 'sessions.archive':
+          result = await this.handleSessionArchive(cmdMessage.params!);
+          break;
+        case 'sessions.restore':
+          result = await this.handleSessionRestore(cmdMessage.params!);
+          break;
+        case 'sessions.delete':
+          result = await this.handleSessionDelete(cmdMessage.params!);
+          break;
+        case 'sessions.reset':
+          result = await this.handleSessionReset(cmdMessage.params!);
+          break;
+        case 'sessions.patch':
+          result = await this.handleUpdateSessionModel(cmdMessage.params as CmdParamsPatchSessionEntry);
+          break;
+        case 'sessions.currentModel':
+          result = await this.handleCurrentSessionModel(cmdMessage.params as { agentId: string; userId: string });
+          break;
+
+        // 当前会话聊天历史记录
+        case 'chat.history':
+          result = await this.handleChatHistories(cmdMessage.params!);
+          break;
+
+        // Skills 管理
+        case 'skills.status':
+          result = await this.handleSkillsStatus(cmdMessage.params);
+          break;
+        case 'skills.search':
+          result = await this.handleSkillsSearch(cmdMessage.params!);
+          break;
+        case 'skills.detail':
+          result = await this.handleSkillDetail(cmdMessage.params);
+          break;
+        case 'skills.install':
+          result = await this.handleSkillInstall(cmdMessage.params!);
+          break;
+        case 'skills.update':
+          result = await this.handleSkillUpdate(cmdMessage.params!);
+          break;
+        case 'skills.securityVerdicts':
+          result = await this.handleSkillsSecurityVerdicts(cmdMessage.params);
+          break;
+        case 'usage.cost':
+          result = await this.handleUsageCost(cmdMessage.params!);
+          break;
+        case 'sessions.usage':
+          result = await this.handleSessionsUsage(cmdMessage.params!);
+          break;
+        case 'sessions.usage.logs':
+          result = await this.handleSessionsUsageLogs(cmdMessage.params!);
+          break;
+        case 'cancelMessage':
+          result = await this.handleCancelMessage(cmdMessage.params!);
+          break;
+        case 'agent.stop':
+          result = await this.handleStopAgent(cmdMessage.params!);
+          break;
+        case 'chat.abort':
+          // 新增 cmd 通道 chat.abort ， 以上两个/stop, /queue interrupt都不能立即终止执行中的会话
+          result = await this.handlChatAbout(cmdMessage.params!);
+          break;
+        case 'pairing.approve':
+          const { code, empId, accountId } = cmdMessage.params ?? {};
+          //注意：accountId目前只能为 DEFAULT_ACCOUNT_ID, 本插件不需要使用多账户,服务端提供多帐户服务(openId提供AGENT路由),在安装插件时需提醒使用"default"
+          result = await this.handleApprove({ code, empId, accountId: accountId || DEFAULT_ACCOUNT_ID })
+          break;
+
+        // 工作区 / Artifact
+        case 'artifacts.list':
+          result = await this.handleArtifactsList(cmdMessage);
+          break;
+        case 'artifacts.get':
+          result = await this.handleArtifactsGet(cmdMessage);
+          break;
+        case 'artifacts.download':
+          result = await this.handleArtifactsDownload(cmdMessage);
+          break;
+        // Agent 工作区文件
+        case 'agents.files.list':
+          result = await this.handleAgentFilesList(cmdMessage);
+          break;
+        case 'agents.files.get':
+          result = await this.handleAgentFilesGet(cmdMessage);
+          break;
+
+        // 扩展能力（ext_capabilities）：语音合成 TTS / 语音转录 STT
+        case 'extCapabilities.status':
+          result = await this.handleExtCapabilityStatus(cmdMessage.params!);
+          break;
+        case 'extCapabilities.check':
+          result = await this.handleExtCapabilityCheck(cmdMessage.params!);
+          break;
+        case 'extCapabilities.install':
+          result = await this.handleExtCapabilityInstall(cmdMessage.params!);
+          break;
+
+        default:
+          throw new Error(`未知的命令: ${cmdMessage.cmd}`);
+      }
+
+      const duration = Date.now() - startTime;
+      this.log(`CMD 处理完成: ${cmdMessage.cmd} (${duration}ms)`, 'info');
+
+      return {
+        success: true,
+        data: result,
+        timestamp: Date.now()
+      };
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      this.log(`CMD 处理失败: ${cmdMessage.cmd} (${duration}ms), error=${String(error)}`, 'error');
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        timestamp: Date.now()
+      };
+    }
+  }
+
+  private async handleAskAgent(params: AskAgentParams): Promise<any> {
+    return await this.client?.askAgent(params);
+  }
+
+  /**
+   * 更新
+   * @param agentId 
+   * @param userId 
+   */
+  private async handleUpdateSessionModel(params: CmdParamsPatchSessionEntry) {
+    const { sessionKey, provider, model } = params;
+    if (!provider || provider.length === 0 || !sessionKey || sessionKey.length === 0) {
+      return null;
+    }
+    const agentId = sessionKey.split(':')[1]
+    const { cfg } = this.options;
+    const storePath = resolveStorePath(cfg.session?.store, { agentId });
+    await patchSessionEntry({
+      storePath,
+      sessionKey,
+      update: (entry) => {
+        applyModelOverrideToSessionEntry({
+          entry,
+          selection: {
+            provider: provider,
+            model: model,
+          },
+          selectionSource: 'user',
+          markLiveSwitchPending: true, // 让当前 run 立即生效
+        });
+        return { ...entry };
+      },
+    });
+    return { provider, model };
+  }
+
+  /**
+   * 查询当前会话的模型覆盖（用于 ChatPage 恢复选中状态）
+   */
+  private async handleCurrentSessionModel(params: { agentId: string; userId: string }) {
+    const { agentId, userId } = params;
+    if (!userId || userId.length === 0) {
+      return null;
+    }
+
+    const { cfg, channelId } = this.options;
+    const sessionKey = `agent:${agentId}:${channelId}:direct:${userId.toLocaleLowerCase()}`;
+    const storePath = resolveStorePath(cfg.session?.store, { agentId });
+    const entry = getSessionEntry({ storePath, sessionKey });
+    if (!entry) return null;
+
+    // 只返回用户主动设置的覆盖，不返回 auto fallback
+    if (entry.modelOverrideSource === 'user' && entry.modelOverride) {
+      return {
+        provider: entry.providerOverride ?? '',
+        model: entry.modelOverride,
+      };
+    }
+    return null;
+  }
+
+  //#region ==================== Agent 管理处理器 ====================
+
+  private async handleAgentList(): Promise<AgentSummary[]> {
+    const agents = await this.client!.listAgents();
+
+    return agents.agents.map(agent => ({
+      id: agent.id,
+      name: agent.name || agent.id,
+      emoji: agent.identity?.emoji,
+      model: agent.model?.primary,
+      workspace: agent.workspace,
+      fileCount: 0, // 需要额外API调用获取
+      lastActivity: undefined,
+      sessionCount: 0 // 需要额外API调用获取
+    }));
+  }
+
+  private async handleAgentCreate(params: Record<string, string>): Promise<{ id: string; name: string }> {
+    const workspace_path = getOpenclawPath('workspace', params.id.toLowerCase().replace(/\s+/g, '-'))
+    const createParams: AgentCreateParams = {
+      name: params.id,
+      workspace: workspace_path,
+      emoji: params.emoji,
+      avatar: (params.avatar && params.avatar.length > 0) ? this.options.baseUrl + params.avatar : undefined
+    }
+    const result = await this.client!.createAgent(createParams);
+    const provider = params.provider ?? ''
+    const udpateParams: AgentUpdateParams = {
+      agentId: result.agentId,
+      name: params.name,
+      workspace: workspace_path,
+      model: provider.length > 0 ? `${provider}/${params.model}` : params.model,
+    }
+    await this.client?.updateAgent(udpateParams);
+    const sessionKey = `agent:${params.agentId}:${this.options.channelId}:direct:${params.userId.toLowerCase()}`;
+    await this.handleUpdateSessionModel({
+      sessionKey,
+      provider: provider,
+      model: params.model
+    })
+
+    return {
+      id: result.agentId,
+      name: params.name
+    };
+  }
+
+  private async handleAgentUpdate(params: Record<string, string>): Promise<{ id: string }> {
+    const agents = await this.client!.listAgents();
+    const agent = agents.agents.find(a => a.id === params.agentId);
+    const provider = params.provider ?? ''
+    if (agent) {
+      //agent存在直接更新
+      const result = await this.client!.updateAgent({
+        agentId: params.agentId,
+        name: params.name,
+        workspace: params.workspace,
+        model: provider.length > 0 ? `${provider}/${params.model}` : params.model,
+        avatar: params.avatar
+      });
+      const sessionKey = `agent:${params.agentId}:${this.options.channelId}:direct:${params.userId.toLowerCase()}`;
+      await this.handleUpdateSessionModel({
+        sessionKey,
+        provider: provider,
+        model: params.model
+      })
+      return { id: result.agentId };
+    }
+    //不存在直接创建一个
+    const p = {
+      id: params.agentId,
+      name: params.name,
+      provider,
+      model: params.model,
+      userId:params.userId
+    }
+    const result = await this.handleAgentCreate(p)
+    return {
+      id: result.id
+    }
+  }
+
+  private async handleAgentDelete(params: any): Promise<{ success: boolean }> {
+    const result = await this.client!.deleteAgent({
+      agentId: params.agentId,
+      deleteFiles: params.deleteFiles || false
+    });
+
+    return { success: result.ok };
+  }
+
+  private async handleAgentGet(params: any): Promise<any> {
+    const agents = await this.client!.listAgents();
+    const agent = agents.agents.find(a => a.id === params.agentId);
+
+    if (!agent) {
+      throw new Error(`Agent ${params.agentId} 未找到`);
+    }
+
+    return agent;
+  }
+  //#endregion
+
+  //#region  ==================== 任务管理处理器 ====================
+  private async handleTaskList(params?: {
+    agentIds?: Array<string>,
+    offset?: number,
+    limit?: number,
+  }): Promise<CronListResponse> {
+    const channelId = this.options.channelId;
+    const res = await this.client!.listCronTasks({
+      limit: params?.limit ?? 200,
+      offset: params?.offset ?? 0,
+    });
+    const agentId_list = params?.agentIds ?? [];
+    if (agentId_list.length > 0) {
+      const jobs = res.jobs.filter(item => agentId_list.includes(item.agentId)).map(item => {
+        if (item.delivery && item.delivery.to && item.delivery.to.startsWith(`${channelId}:`)) {
+          return {
+            ...item,
+            delivery: {
+              ...item.delivery,
+              to: item.delivery.to.replaceAll(`${channelId}:`, '')
+            }
+          }
+        }
+        return item;
+      });
+      return {
+        ...res,
+        total: jobs.length,
+        jobs
+      }
+    }
+    const jobs = (res.jobs ?? []).map(item => {
+      if (item.delivery && item.delivery.to && item.delivery.to.startsWith(`${channelId}:`)) {
+        return {
+          ...item,
+          delivery: {
+            ...item.delivery,
+            to: item.delivery.to.replaceAll(`${channelId}:`, '')
+          }
+        }
+      }
+      return item;
+    })
+    return {
+      ...res,
+      total: res.jobs.length,
+      jobs
+    }
+  }
+
+  private async handleTaskCreate(params: any): Promise<any> {
+    const res = await this.client!.addCronTask(params);
+    console.log('创建任务 >>> ', JSON.stringify(res));
+    return res;
+  }
+
+  // task.update — 更新定时任务（通过 OpenClaw cron.update）
+  private async handleTaskUpdate(params: any): Promise<any> {
+    const result = await this.client!.updateCronTask({
+      jobId: params.jobId,
+      patch: params.patch,
+    });
+    console.log('更新任务 >>> ', JSON.stringify(result));
+    return result;
+  }
+
+  private async handleTaskDelete(params: any): Promise<{ success: boolean }> {
+    const result = await this.client!.removeCronTask({
+      jobId: params.jobId
+    });
+    return { success: result.ok };
+  }
+
+  private async handleTaskRun(params: any): Promise<{ success: boolean; runId?: string }> {
+    const result = await this.client!.runCronTask({
+      jobId: params.jobId
+    });
+
+    return {
+      success: result.ok,
+      runId: result.runId
+    };
+  }
+  //#endregion
+
+  //#region ==================== 状态监控处理器 ====================
+
+  private async handleStatusHealth(): Promise<SystemSummary> {
+    const health = await this.client!.getHealthStatus();
+
+    return {
+      status: health.status,
+      version: health.version,
+      uptime: this.formatUptime(health.uptime),
+      agentCount: Object.keys(health.agents).length,
+      channelCount: Object.keys(health.channels).length,
+      memoryUsage: health.memory ? `${Math.round(health.memory.percent)}%` : '未知',
+      totalTokens: 0, // 需要 usage API
+      totalCost: 0    // 需要 usage API
+    };
+  }
+
+  private async handleStatusSystem(): Promise<any> {
+    const system = await this.client!.getSystemStatus();
+    return system;
+  }
+
+  private async handleStatusUsage(): Promise<any> {
+    const usage = await this.client!.getUsageStatus();
+    return usage;
+  }
+
+  private async handleListModels(): Promise<any> {
+    const res = await this.client?.listModels();
+    return res?.models ?? []
+  }
+  //#endregion
+
+  //#region ===================== 会话处理器 ======================
+  private async handleSessionList(params: Record<string, unknown>): Promise<any> {
+    return await this.client?.sessionsList(params);
+  }
+  private async handleSessionGet(params: Record<string, unknown>): Promise<any> {
+    return await this.client?.sessionsGet(params);
+  }
+  private async handleSessionsDescribe(params: Record<string, string>): Promise<any> {
+    return await this.client?.sessionsDescribe(params);
+  }
+
+  private async handleSessionsResolve(params: Record<string, unknown>): Promise<any> {
+    return await this.client?.sessionsResolve(params);
+  }
+
+  /**
+   * 创建新会话
+   * sessionKey: agent:<agentId>:<channelId>-<suffix>:<chatType>:<userId>
+   * 例: agent:main:workrelay-00001:direct:I35916630580137984
+   */
+  private async handleSessionCreate(params: Record<string, string>): Promise<any> {
+    const { sessionKey } = params;
+    if (!sessionKey) {
+      throw new Error('sessions.create 缺少 sessionKey 参数');
+    }
+    return await this.client?.sessionsCreate({ key: sessionKey });
+  }
+
+  /**
+   * 归档会话
+   * 入参: { sessionKey }
+   * - sessionKey: 完整的 sessionKey，如 "agent:main:workrelay-00001:direct:i35916630580137984"
+   */
+  private async handleSessionArchive(params: Record<string, string>): Promise<any> {
+    const { sessionKey } = params;
+    if (!sessionKey) {
+      throw new Error('sessions.archive 缺少 sessionKey 参数');
+    }
+    this.log(`sessions.archive sessionKey=${sessionKey}`, 'info');
+    return await this.client?.sessionsPatch({ key: sessionKey, patch: { archived: true } });
+  }
+
+  /**
+   * 恢复（取消归档）会话
+   * 入参: { sessionKey }
+   * - sessionKey: 完整的 sessionKey
+   */
+  private async handleSessionRestore(params: Record<string, string>): Promise<any> {
+    const { sessionKey } = params;
+    if (!sessionKey) {
+      throw new Error('sessions.restore 缺少 sessionKey 参数');
+    }
+    this.log(`sessions.restore sessionKey=${sessionKey}`, 'info');
+    return await this.client?.sessionsPatch({ key: sessionKey, patch: { archived: false } });
+  }
+
+  /**
+   * 删除会话
+   * 入参: { sessionKey, deleteFiles? }
+   * - sessionKey:  完整的 sessionKey
+   * - deleteFiles: 是否同时删除会话相关文件（可选，默认 false）
+   */
+  private async handleSessionDelete(params: Record<string, string | boolean>): Promise<any> {
+    const sessionKey = params.sessionKey as string;
+    if (!sessionKey) {
+      throw new Error('sessions.delete 缺少 sessionKey 参数');
+    }
+    this.log(`sessions.delete sessionKey=${sessionKey}`, 'info');
+    const arr = sessionKey.split(':');
+    const userId = arr[arr.length - 1];
+    const effective_userId = userId.length <= 20 && userId.startsWith('i');
+    if (sessionKey.startsWith(`agent:main:${this.options.channelId}:`) && effective_userId) {
+      throw new Error('Deleting the default session is prohibited.')
+    }
+    return await this.client?.sessionsDelete({ key: sessionKey });
+  }
+
+  private async handleSessionReset(params: Record<string, string>): Promise<any> {
+    return await this.client?.sessionReset(params);
+  }
+
+  private async handleChatHistories(params: Record<string, string>): Promise<any> {
+    return await this.client?.chatHistories(params);
+  }
+
+  //#endregion
+
+  //#region ==================== Skills 管理处理器 ====================
+
+  private async handleSkillsStatus(params?: Record<string, unknown>): Promise<any> {
+    return await this.client?.listSkills(params?.agentId as string | undefined);
+  }
+
+  private async handleSkillsSearch(params: Record<string, unknown>): Promise<any> {
+    return await this.client?.searchSkills({
+      query: params.query as string | undefined,
+      limit: params.limit as number | undefined,
+    });
+  }
+
+  private async handleSkillDetail(params?: Record<string, unknown>): Promise<any> {
+    if (!params?.slug) {
+      throw new Error('skills.detail 缺少 slug 参数');
+    }
+    return await this.client?.getSkillDetail(params.slug as string);
+  }
+
+  private async handleSkillInstall(params: Record<string, unknown>): Promise<any> {
+    if (!params.slug) {
+      throw new Error('skills.install 缺少 slug 参数');
+    }
+    return await this.client?.installSkill(
+      params.slug as string,
+      params.version as string | undefined,
+    );
+  }
+
+  private async handleSkillUpdate(params: Record<string, unknown>): Promise<any> {
+    if (!params.skillKey) {
+      throw new Error('skills.update 缺少 skillKey 参数');
+    }
+    return await this.client?.updateSkillConfig(
+      params.skillKey as string,
+      params.enabled as boolean,
+    );
+  }
+
+  private async handleSkillsSecurityVerdicts(params?: Record<string, unknown>): Promise<any> {
+    return await this.client?.getSkillSecurityVerdicts(params?.agentId as string | undefined);
+  }
+
+  // 仪表盘：按日期范围聚合成本
+  private async handleUsageCost(params: Record<string, unknown>) {
+    const result = await this.client!.getUsageCost(params);
+    return { data: result };
+  }
+
+  // 仪表盘：每 session 详细使用统计
+  private async handleSessionsUsage(params: Record<string, unknown>) {
+    const result = await this.client!.getSessionsUsage(params);
+    return { data: result };
+  }
+
+  // 仪表盘：每消息级别使用日志
+  private async handleSessionsUsageLogs(params: Record<string, unknown>) {
+    const result = await this.client!.getSessionsUsageLogs(params);
+    return { data: result };
+  }
+
+  /**
+   * 取消当前Agent执行，通过Gateway /queue interrupt 中断活跃run
+   */
+  private async handleCancelMessage(params: Record<string, any>): Promise<any> {
+    const { sessionKey } = params;
+    if (!sessionKey) {
+      throw new Error('cancelMessage 缺少 sessionKey 参数');
+    }
+    // channelId 从配置获取，不硬编码
+    return await this.client?.cancelSession({ sessionKey });
+  }
+
+  /**
+   * 强制停止当前Agent run（/stop，比 /queue interrupt 更快）
+   * 新增 cmd 通道 agent.stop 指令
+   */
+  private async handleStopAgent(params: Record<string, any>): Promise<any> {
+    const { sessionKey } = params;
+    if (!sessionKey) {
+      throw new Error('agent.stop 缺少 sessionKey 参数');
+    }
+    return await this.client?.stopSession({
+      sessionKey
+    });
+  }
+
+  private async handlChatAbout(params: Record<string, any>): Promise<void> {
+    const { sessionKey, runId } = params;
+    if (!sessionKey) {
+      throw new Error('chat.bort 缺少 sessionKey, runId 参数');
+    }
+    // 2026-08-24 立即终止优化：先标记该 runId 已停止，
+    // before_tool_call 钩子会 block 此 run 后续的工具调用（chat.abort 是协作式取消，无法打断正在执行的工具）
+    if (runId) {
+      markRunStopped(runId);
+    }
+    return await this.client?.chatAbort({ sessionKey, runId })
+  }
+
+  //#endregion
+
+  //#region -----------对码审批--------------
+  private async handleApprove(params: { code: string, empId: string, accountId: string }) {
+    const { code, empId, accountId } = params;
+    const res = await approveChannelPairingCode({
+      channel: this.options.channelId,
+      code,
+      accountId,
+    });
+    if (res) {
+      this.emit('onPairingResult', {
+        approved: true,
+        senderId: res.id,
+        empId,
+        code
+      })
+      return {
+        success: true,
+        data: {
+          ...res
+        },
+        timestamp: Date.now()
+      }
+    }
+    throw new Error('审批失败:验证码无效或已过期!')
+  }
+  //#endregion
+
+  //#region ======================== 工作区 / Artifact 处理器 ========================
+
+  /** artifacts.list - 列出会话工件 */
+  async handleArtifactsList(cmdMessage: CmdMessage): Promise<any> {
+    const { sessionKey } = cmdMessage.params || {};
+    if (!sessionKey || sessionKey.length === 0) {
+      throw new Error('artifacts.list 缺少 sessionKey 参数');
+    }
+    this.log(`artifacts.list sessionKey=${sessionKey}`, 'info');
+    return await this.client?.artifactsList({ sessionKey });
+  }
+
+  /** artifacts.get - 获取单个工件详情 */
+  async handleArtifactsGet(cmdMessage: CmdMessage): Promise<any> {
+    const params: ArtifactGetParams = cmdMessage.params as ArtifactGetParams;
+    this.log(`artifacts.get params=${JSON.stringify(params)}`, 'info');
+    return await this.client?.artifactsGet(params);
+  }
+
+  /** artifacts.download - 下载工件 */
+  async handleArtifactsDownload(cmdMessage: CmdMessage): Promise<any> {
+    const params: ArtifactDownloadParams = cmdMessage.params as ArtifactDownloadParams;
+    this.log(`artifacts.download params=${JSON.stringify(params)}`, 'info');
+    const result = await this.client?.artifactsDownload(params);
+    this.log(`artifacts.download result size=${result?.size ?? 'unknown'}`, 'info');
+    return result;
+  }
+
+  // ======================== Agent 工作区文件处理器 ========================
+
+  /** agents.files.list - 列出 Agent 工作区文件 */
+  async handleAgentFilesList(cmdMessage: CmdMessage): Promise<any> {
+    const params: AgentFilesListParams = cmdMessage.params as AgentFilesListParams;
+    this.log(`agents.files.list params=${JSON.stringify(params)}`, 'info');
+
+    // 2026-07-31 新增：优先尝试本地文件系统直读（递归扫描所有文件），
+    // 目录受限/无权限时自动回退到 Gateway RPC（保留原有兜底逻辑）
+    try {
+      const result = await this.client?.agentFilesListLocal(params.agentId);
+      this.log(`agents.files.list (local scan) result count=${result?.files?.length ?? 0}`, 'info');
+      return result;
+    } catch (err) {
+      this.log(`agents.files.list (local scan) failed: ${err}, falling back to Gateway RPC`, 'warn');
+      const result = await this.client?.agentFilesList(params.agentId);
+      this.log(`agents.files.list (Gateway RPC fallback) result count=${result?.files?.length ?? 0}`, 'info');
+      return result;
+    }
+  }
+
+  /** agents.files.get - 获取工作区文件内容 */
+  async handleAgentFilesGet(cmdMessage: CmdMessage): Promise<any> {
+    const params: AgentFilesGetParams = cmdMessage.params as AgentFilesGetParams;
+    this.log(`agents.files.get params=${JSON.stringify(params)}`, 'info');
+
+    // 2026-07-31 新增：优先本地文件系统直读（绕过 Gateway 文件白名单限制），
+    // 权限不足/文件不存在时自动回退到 Gateway RPC
+    try {
+      const result = await this.client?.agentFilesGetLocal(params.agentId, params.name);
+      this.log(`agents.files.get (local) result name=${params.name}`, 'info');
+      return result;
+    } catch (err) {
+      this.log(`agents.files.get (local) failed: ${err}, falling back to Gateway RPC`, 'warn');
+      const result = await this.client?.agentFilesGet(params.agentId, params.name);
+      this.log(`agents.files.get (Gateway RPC fallback) result name=${params.name}`, 'info');
+      return result;
+    }
+  }
+
+  //#endregion
+
+  //#region ==================== 扩展能力处理器（ext_capabilities）====================
+
+  /**
+   * extCapabilities.status - 查询扩展能力安装状态
+   * params: { name: 'workrelay-speak' | 'workrelay-transcribe' }
+   * 执行 ext_capabilities/<name>/status.sh，返回 JSON 供客户端展示
+   */
+  async handleExtCapabilityStatus(params: Record<string, any>): Promise<any> {
+    const name = params?.name;
+    if (!name) {
+      throw new Error('extCapabilities.status 缺少 name 参数');
+    }
+    const extDir = getExtCapabilitiesDir();
+    const scriptPath = path.join(extDir, name, 'status.sh');
+    this.log(`extCapabilities.status script=${scriptPath}`, 'info');
+
+    if (!fs.existsSync(scriptPath)) {
+      return {
+        status: 'disabled',
+        description: `能力 ${name} 未安装（脚本不存在）`,
+        checks: {}
+      };
+    }
+
+    try {
+      const execAsync = promisify(exec);
+      const { stdout } = await execAsync(`bash "${scriptPath}"`, { timeout: 15000, encoding: 'utf-8' });
+      // status.sh 输出 JSON（尾部可能带换行/日志），取最后一个 { } 块解析
+      const match = stdout.match(/\{[\s\S]*\}/);
+      let result: any;
+      if (match) {
+        result = JSON.parse(match[0]);
+      } else {
+        result = { status: 'unknown', description: stdout.trim() || '状态解析失败', checks: {} };
+      }
+      // 2026-08-10 安装存活检测：判断 install.sh 进程是否真实在跑。
+      // 客户端 store 持久化的 installing 状态在重启后可能残留（假死），
+      // 客户端据此自动解除“安装中”，恢复可重新安装。
+      result.installing = await this.isExtCapabilityInstalling(name);
+      // 2026-08-18 日志位置随状态返回：客户端界面直接显示安装日志路径，方便排查。
+      result.logFile = getOpenclawPath('logs', `ext-capabilities-${name}-install.log`);
+      return result;
+    } catch (err) {
+      // status.sh 非 0 退出（如未安装返回 1），但 stdout 仍有 JSON
+      const stdout = (err as any)?.stdout as string;
+      const match = stdout?.match(/\{[\s\S]*\}/);
+      if (match) {
+        try {
+          const result = JSON.parse(match[0]);
+          result.installing = await this.isExtCapabilityInstalling(name);
+          // 2026-08-18 日志位置随状态返回（与上方成功分支一致）
+          result.logFile = getOpenclawPath('logs', `ext-capabilities-${name}-install.log`);
+          return result;
+        } catch { /* ignore */ }
+      }
+      this.log(`extCapabilities.status 执行失败: ${String(err)}`, 'warn');
+      return { status: 'unknown', description: '状态查询失败', checks: {}, installing: false };
+    }
+  }
+
+  /**
+   * 2026-08-10 检测指定扩展能力的安装进程是否真实在跑（存活检测）
+   * 注意：不能用 pgrep -f "...install.sh" —— 该命令经 bash -c 执行时，bash 进程
+   * 自身命令行包含 install.sh 字符串，pgrep 会永远自匹配，导致 installing 恒为 true。
+   * 改用 ps + grep 方括号技巧（grep 自身命令行不含字面 install.sh，不会自匹配）。
+   */
+  private async isExtCapabilityInstalling(name: string): Promise<boolean> {
+    try {
+      const extDir = getExtCapabilitiesDir();
+      const installScript = path.join(extDir, name, 'install.sh');
+      const execAsync = promisify(exec);
+      // [i]nstall.sh 方括号技巧：grep 进程自身命令行是 "grep [i]nstall.sh"，不含字面 install.sh
+      const { stdout } = await execAsync(`ps -eo args | grep "[i]nstall\\.sh" | grep -v grep`, { timeout: 3000, encoding: 'utf-8' });
+      // 只认跑在脚本路径上的进程，避免匹配到其它无关 install.sh
+      const lines = stdout.split('\n').filter((line) => line.trim().length > 0);
+      return lines.some((line) => line.includes(installScript) || line.includes('bash ' + installScript));
+    } catch {
+      return false; // 出错 → 视为未在安装
+    }
+  }
+
+  /**
+   * extCapabilities.check - 检查扩展能力安装前置条件
+   * params: { name: 'workrelay-speak' | 'workrelay-transcribe' }
+   * 读取 ext_capabilities/<name>/manifest.json，逐条执行 requirements[].check（shell 表达式），
+   * exit 0 = 条件满足。返回每条条件是否满足，客户端据此展示"安装条件"清单。
+   * 2026-08-11 新增：通用适配——每个能力自带前置条件清单，用户安装前即可看到环境是否满足。
+   */
+  async handleExtCapabilityCheck(params: Record<string, any>): Promise<any> {
+    const name = params?.name;
+    if (!name) {
+      throw new Error('extCapabilities.check 缺少 name 参数');
+    }
+    const extDir = getExtCapabilitiesDir();
+    const manifestPath = path.join(extDir, name, 'manifest.json');
+    this.log(`extCapabilities.check manifest=${manifestPath}`, 'info');
+
+    if (!fs.existsSync(manifestPath)) {
+      return { name, displayName: name, allMet: true, requirements: [], note: '该能力未提供前置条件清单' };
+    }
+
+    let manifest: any;
+    try {
+      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    } catch (err) {
+      this.log(`extCapabilities.check manifest 解析失败: ${String(err)}`, 'warn');
+      return { name, displayName: name, allMet: true, requirements: [], note: '前置条件清单解析失败' };
+    }
+
+    const requirements: Array<Record<string, any>> = manifest.requirements ?? [];
+    const execAsync = promisify(exec);
+    const results: Array<Record<string, any>> = [];
+
+    for (const req of requirements) {
+      const item: Record<string, any> = {
+        id: req.id,
+        label: req.label,
+        expect: req.expect,
+        hint: req.hint,
+        met: false,
+      };
+      try {
+        // check 是 shell 表达式，exit 0 = 满足；10s 超时防止命令卡死
+        await execAsync(req.check, { timeout: 10000, encoding: 'utf-8' });
+        item.met = true;
+      } catch (err) {
+        item.met = false;
+        item.detail = String((err as any)?.message ?? err).split('\n')[0] ?? undefined;
+      }
+      results.push(item);
+    }
+
+    return {
+      name: manifest.name ?? name,
+      displayName: manifest.displayName ?? name,
+      allMet: results.every((r) => r.met === true),
+      requirements: results,
+    };
+  }
+
+  /**
+   * extCapabilities.install - 安装扩展能力（长任务，后台执行）
+   * params: { name: 'workrelay-speak' | 'workrelay-transcribe' }
+   * install.sh 可能需要 5-15 分钟（下载模型），后台 spawn 立即返回"已开始"，
+   * 客户端通过轮询 extCapabilities.status 感知进度
+   */
+  async handleExtCapabilityInstall(params: Record<string, any>): Promise<any> {
+    const name = params?.name;
+    if (!name) {
+      throw new Error('extCapabilities.install 缺少 name 参数');
+    }
+    const extDir = getExtCapabilitiesDir();
+    const scriptPath = path.join(extDir, name, 'install.sh');
+    this.log(`extCapabilities.install script=${scriptPath}`, 'info');
+
+    if (!fs.existsSync(scriptPath)) {
+      throw new Error(`能力 ${name} 的安装脚本不存在: ${scriptPath}`);
+    }
+
+    // 后台 spawn，detached 脱离父进程生命周期
+    // 2026-08-10 修改：stdio 不再 ignore，stdout/stderr 重定向到日志文件，方便排查安装失败原因
+    const logFile = getOpenclawPath('logs', `ext-capabilities-${name}-install.log`);
+    try {
+      fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    } catch { /* ignore */ }
+    const outFd = fs.openSync(logFile, 'a');
+    const child = spawn('bash', [scriptPath], {
+      detached: true,
+      stdio: ['ignore', outFd, outFd],
+      env: { ...process.env },
+    });
+
+    // 2026-08-10 修复：spawn 成功 ≠ 脚本执行成功。脚本内部立即失败（权限/依赖检查）
+    // 时 error 事件不会触发，失败输出全进日志文件，客户端只看到 started:true → 错误被吞。
+    // 方案：监听 exit 事件，3 秒窗口内脚本退出且退出码非 0 → 视为安装失败，读日志尾部报回。
+    const quickFail = await new Promise<{ failed: boolean; code: number | null }>((resolve) => {
+      let settled = false;
+      const finish = (failed: boolean, code: number | null) => {
+        if (settled) return;
+        settled = true;
+        resolve({ failed, code });
+      };
+      const timer = setTimeout(() => finish(false, null), 3000); // 3 秒没退出 → 长任务在跑
+      child.once('error', (err: Error) => {
+        clearTimeout(timer);
+        this.log(`extCapabilities.install spawn 错误: ${err.message}`, 'error');
+        finish(true, -1);
+      });
+      child.once('exit', (code, _signal) => {
+        clearTimeout(timer);
+        finish(code !== 0, code ?? -1);
+      });
+    });
+
+    if (quickFail.failed) {
+      // 读取日志尾部作为具体错误信息报回客户端（不吞错）
+      const tail = this.readLogTail(logFile);
+      this.log(`extCapabilities.install 执行失败(exit=${quickFail.code}): ${tail}`, 'error');
+      return {
+        started: false,
+        name,
+        error: `安装脚本执行失败(exit=${quickFail.code ?? 'unknown'}): ${tail}`,
+        logFile,
+      };
+    }
+
+    // 长任务在跑：监听后续 error/exit 记日志，unref 脱离父进程生命周期
+    child.on('error', (err: Error) => {
+      this.log(`extCapabilities.install 运行错误: ${err.message}`, 'error');
+    });
+    child.unref();
+    // 记录日志文件位置，便于客户端/日志排查
+    this.log(`extCapabilities.install 日志: ${logFile}`, 'info');
+
+    return {
+      started: true,
+      name,
+      message: `安装已启动，请稍后刷新状态（${name} 首次安装需下载模型，约 5-15 分钟）`,
+      logFile,
+    };
+  }
+
+  //#endregion
+
+  //#region ==================== 工具函数 ==========================
+
+  /**
+   * 2026-08-10 读取日志文件尾部内容（供安装失败报错）
+   */
+  private readLogTail(logFile: string, maxLines = 20): string {
+    try {
+      const content = fs.readFileSync(logFile, 'utf-8');
+      const lines = content.split('\n').filter((l) => l.trim().length > 0);
+      return lines.slice(-maxLines).join('\n').trim() || '(日志为空)';
+    } catch (err) {
+      return `(无法读取日志: ${String(err)})`;
+    }
+  }
+  private formatUptime(seconds: number): string {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    if (days > 0) {
+      return `${days}天${hours}小时`;
+    } else if (hours > 0) {
+      return `${hours}小时${minutes}分钟`;
+    } else {
+      return `${minutes}分钟`;
+    }
+  }
+
+  cleanup(): void {
+    if (this.client) {
+      this.client.disconnect();
+      this.client.removeAllListeners();
+      this.client = null;
+    }
+    this.isInitialized = false;
+  }
+  //#endregion
+}
+
+
+export default ClawServices;

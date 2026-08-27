@@ -1,0 +1,88 @@
+import { ChannelOutboundAdapter, DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/core";
+import { getDLLogger, getDLRuntime } from "./runtime.js";
+import { TEXT_CHUNK_LIMIT } from "./client/const.js";
+import { getDLClient } from "./client/client-manager.js";
+import { ChannelPairingAdapter } from "openclaw/plugin-sdk/channel-runtime";
+
+const log_prefix = "[Outbound.ts]" as const;
+
+const getClient = (accountId: string) => {
+    const dlClient = getDLClient(accountId);
+    if (!dlClient) {
+        throw new Error(`${log_prefix} DLClient account[${accountId}] is null!`);
+    }
+    return dlClient;
+}
+
+export const dlOutbound = (): ChannelOutboundAdapter => {
+    const logger = getDLLogger();
+    return {
+        deliveryMode: "direct",
+        chunker: (text, limit) => getDLRuntime().channel.text.chunkMarkdownText(text, limit),
+        chunkerMode: "markdown",
+        textChunkLimit: TEXT_CHUNK_LIMIT,
+        async sendMedia(ctx) {
+            const { to, text, accountId, replyToId, threadId, mediaUrl } = ctx;
+            const accId = accountId || DEFAULT_ACCOUNT_ID;
+            logger.info(`${log_prefix} Notify[sendMedia] to[${to}], accountId=${accId}, replyToId=${replyToId}, threadId=${threadId}, text=${text}`);
+            logger.info(`${log_prefix} Media files = [${mediaUrl}]..`);
+            return await getClient(accId).autoReply({
+                to,
+                text,
+                mediaFiles: mediaUrl && mediaUrl.length > 0 ? [mediaUrl] : []
+            })
+        },
+        async sendPayload(ctx) {
+            //主动出站(文本与媒体文件)
+            const { to, accountId, replyToId, threadId, payload } = ctx;
+            const accId = accountId || DEFAULT_ACCOUNT_ID;
+            logger.info(`${log_prefix} Notify[sendPayload] to[${to}], accountId=${accId}, replyToId=${replyToId}, threadId=${threadId}, text=${payload.text}`);
+            const mediaFile: Array<string> = [];
+            if (payload.mediaUrl) {
+                mediaFile.push(payload.mediaUrl);
+            }
+            if (payload.mediaUrls && payload.mediaUrls.length > 0) {
+                payload.mediaUrls.map(item => mediaFile.push(item));
+            }
+            const text = payload.text ?? ''
+            const dlClient = getClient(accId);
+            return await dlClient.autoReply({
+                to,
+                text,
+                mediaFiles: [...mediaFile]
+            })
+        },
+        async sendText(ctx) {
+            //主动出站(文本)
+            const { cfg, to, text, accountId, replyToId, threadId } = ctx;
+            const accId = accountId || DEFAULT_ACCOUNT_ID;
+            logger.info(`${log_prefix} Notify[sendText] to[${to}], accountId=${accId}, replyToId=${replyToId}, threadId=${threadId}, text=${text}`);
+            const dlClient = getClient(accId);
+            return await dlClient.autoReply({
+                to,
+                text
+            })
+        }
+    }
+}
+
+export const dlPairing = (channelId: string): ChannelPairingAdapter => {
+    const logger = getDLLogger();
+    return {
+        idLabel: channelId,
+        normalizeAllowEntry: (entry) =>{
+            const trimmed = entry?.trim();
+            logger.info(`${log_prefix} NormalizeAllowEntry: ${trimmed}`)
+            return trimmed.replace(new RegExp(`^(${channelId}|user):`, "i"), "").trim()
+        },
+        notifyApproval: async ({cfg, accountId }) => {
+            const accId = accountId || DEFAULT_ACCOUNT_ID;
+            logger.info('对码成功回调通知...')
+            const dlClient = getDLClient(accId);
+            if (dlClient) {
+                await dlClient.approved(true);
+            }
+            throw new Error(`${channelId} account[${accId}] DLClient is null!`)
+        }
+    };
+}

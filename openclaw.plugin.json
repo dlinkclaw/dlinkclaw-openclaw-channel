@@ -1,0 +1,142 @@
+{
+  "id": "dlink",
+  "channels": [
+    "dlink"
+  ],
+  "skills": [
+    "./skills"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiKey": {
+        "type": "string",
+        "description": "朵联 apiKey"
+      },
+      "baseUrl": {
+        "type": "string",
+        "description": "朵联回调URL",
+        "default": "https://your-dlink-server.example.com"
+      },
+      "secret": {
+        "type": "string",
+        "description": "朵联签名密钥"
+      },
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "accountId": {
+        "type": "string",
+        "description": "账号标识",
+        "default": "default"
+      },
+      "mediaMaxMb": {
+        "type": "number",
+        "description": "媒体大小上限(MB)，OpenClaw 核心出站媒体校验读取，默认 100",
+        "default": 100
+      }
+    }
+  },
+  "setup": {
+    "requiresRuntime": true,
+    "prompts": [
+      {
+        "name": "apiKey",
+        "type": "input",
+        "message": "请输入朵联 API Key:",
+        "validate": "required"
+      },
+      {
+        "name": "secret",
+        "type": "input",
+        "message": "请输入朵联签名密钥:",
+        "validate": "required"
+      },
+      {
+        "name": "baseUrl",
+        "type": "input",
+        "message": "请输入朵联回调地址:",
+        "default": "https://your-dlink-server.example.com",
+        "validate": "required"
+      },
+      {
+        "name": "accountId",
+        "type": "input",
+        "message": "请输入账号标识（默认: default）:",
+        "default": "default"
+      },
+      {
+        "name": "enabled",
+        "type": "confirm",
+        "message": "是否立即启用朵联通道？",
+        "default": true
+      }
+    ]
+  },
+  "channelConfigs": {
+    "dlink": {
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "apiKey": {
+            "type": "string",
+            "description": "朵联 apiKey"
+          },
+          "baseUrl": {
+            "type": "string",
+            "description": "朵联回调URL",
+            "default": "https://your-dlink-server.example.com"
+          },
+          "secret": {
+            "type": "string",
+            "description": "朵联签名密钥"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "accountId": {
+            "type": "string",
+            "description": "账号标识",
+            "default": "default"
+          },
+          "mediaMaxMb": {
+            "type": "number",
+            "description": "媒体大小上限(MB)，OpenClaw 核心出站媒体校验读取，默认 100",
+            "default": 100
+          }
+        }
+      },
+      "label": "朵联 DLinkClaw",
+      "description": "朵联 DLinkClaw OpenClaw 接入通道",
+      "commands": {
+        "nativeCommandsAutoEnabled": false
+      },
+      "uiHints": {
+        "apiKey": {
+          "label": "API Key",
+          "help": "朵联平台的 API 密钥，在朵联控制台获取",
+          "placeholder": "请输入 API Key",
+          "sensitive": true
+        },
+        "secret": {
+          "label": "签名密钥",
+          "help": "朵联平台的签名密钥，用于消息加解密与签名认证",
+          "placeholder": "请输入签名密钥",
+          "sensitive": true
+        },
+        "baseUrl": {
+          "label": "回调地址",
+          "help": "朵联消息回调的服务器地址",
+          "placeholder": "https://your-dlink-server.example.com"
+        },
+        "enabled": {
+          "label": "启用通道"
+        }
+      }
+    }
+  }
+}
