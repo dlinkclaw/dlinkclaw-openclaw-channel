@@ -501,10 +501,10 @@ export class DLClient extends EventEmitter {
             return;
         }
 
-        if (kind === 'plan' && message.contactType === 'group') {
+        //if (kind === 'plan' && message.contactType === 'group') {
             //群组时中间态消息就不回传了，显得消息太杂
-            return;
-        }
+            //return;
+        //}
 
         let result_content = message.payload;
         if (kind !== 'patch' && kind !== 'plan' && kind !== 'block') {
