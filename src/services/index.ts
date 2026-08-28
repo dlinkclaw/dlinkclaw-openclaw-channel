@@ -88,8 +88,24 @@ export class CmdHandler {
       //   }
       // });
 
-      this.services.on('onSessionsChanged', (_payload) => {
-        //this.log(`sessions.changed >>> ${JSON.stringify(payload)}`, 'info'); //暂时不需要处理
+      this.services.on('onSessionsChanged', (payload) => {
+        // 2026-08-28 会话变更推送（直接推客户端）：
+        // 原方案 publishEventToServer 走服务端 MQTT 转发，但服务端未定义 onSessionsChanged 接收端，事件会丢；
+        // 且网关 sessions.changed 是全量快照(payload 大、每条消息都触发)，不宜走服务端转发。
+        // 改为 publishEventToDLClient 直接推给 openUserTopics(客户端订阅的 chatTopic 集合，onTick/onHealth 同款通道)，
+        // 并精简 payload 只保留会话上下文占用所需字段，避免快照体积。
+        if (!payload) {
+          return;
+        }
+        // 精简：丢弃全量快照，只保留客户端显示上下文占用百分比所需字段
+        const slimPayload = {
+          sessionKey: payload.sessionKey,
+          totalTokens: payload.totalTokens,
+          contextTokens: payload.contextTokens,
+          totalTokensFresh: payload.totalTokensFresh,
+          model: payload.model,
+        };
+        this.dlClient.publishEventToDLClient(slimPayload, 'onSessionsChanged', '0');
       })
       this.services.on('onSessionMessage', (payload) => {
         if (!payload) {

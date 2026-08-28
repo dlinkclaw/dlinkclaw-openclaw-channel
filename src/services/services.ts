@@ -18,7 +18,7 @@ import WSClient from './ws-client.js';
 import { PluginLogger } from 'openclaw/plugin-sdk';
 import { getOpenclawPath, getExtCapabilitiesDir } from '../utils.js';
 import { applyModelOverrideToSessionEntry } from 'openclaw/plugin-sdk/model-session-runtime';
-import { getSessionEntry, patchSessionEntry, resolveStorePath } from 'openclaw/plugin-sdk/config-runtime';
+import { getSessionEntry, patchSessionEntry, resolveStorePath, listSessionEntries } from 'openclaw/plugin-sdk/config-runtime';
 import { approveChannelPairingCode } from 'openclaw/plugin-sdk/conversation-runtime';
 import { DEFAULT_ACCOUNT_ID } from 'openclaw/plugin-sdk/core';
 import { markRunStopped } from '../runtime.js';
@@ -240,7 +240,7 @@ export class ClawServices extends EventEmitter {
           result = await this.handleUpdateSessionModel(cmdMessage.params as CmdParamsPatchSessionEntry);
           break;
         case 'sessions.currentModel':
-          result = await this.handleCurrentSessionModel(cmdMessage.params as { agentId: string; userId: string });
+          result = await this.handleCurrentSessionModel(cmdMessage.params as { sessionKey: string });
           break;
 
         // 当前会话聊天历史记录
@@ -360,11 +360,16 @@ export class ClawServices extends EventEmitter {
       return null;
     }
     const agentId = sessionKey.split(':')[1]
-    const { cfg } = this.options;
+    const { cfg, channelId } = this.options;
     const storePath = resolveStorePath(cfg.session?.store, { agentId });
+    // 2026-08-28 修复：客户端传入的 sessionKey 可能是无后缀 key（agent:<agentId>:<channelId>:direct:<empId>），
+    // 而网关实际会话 key 带 chatId 后缀（agent:<agentId>:<channelId>:direct:<empId>-<botId>-<botType>）。
+    // store 里同时存在两套 key 时，直接写入无后缀 key 会命中旧遗留会话，导致切模型不生效。
+    // 这里先解析出真实会话 key 再 patch，保证模型覆盖写入当前真实会话。
+    const realKey = this.resolveDirectSessionKey(storePath, sessionKey, agentId, channelId);
     await patchSessionEntry({
       storePath,
-      sessionKey,
+      sessionKey: realKey,
       update: (entry) => {
         applyModelOverrideToSessionEntry({
           entry,
@@ -382,18 +387,59 @@ export class ClawServices extends EventEmitter {
   }
 
   /**
-   * 查询当前会话的模型覆盖（用于 ChatPage 恢复选中状态）
+   * 2026-08-28 解析 direct 会话的真实 sessionKey（兼容 chatId 后缀）
+   * 背景：客户端拼的 key 是 agent:<agentId>:<channelId>:direct:<empId>（无后缀），
+   * 但网关按 chatId 生成的会话 key 带后缀（agent:<agentId>:<channelId>:direct:<empId>-<botId>-<botType>），
+   * store 中两套 key 同时存在时，无后缀 key 可能命中旧遗留会话（模型覆盖过期），
+   * 导致 sessions.currentModel 返回旧模型、sessions.patch 写入旧会话。
+   * 策略：先精确匹配传入 key；查不到 entry 时，用前缀匹配 store 中 updatedAt 最新的 direct 会话。
    */
-  private async handleCurrentSessionModel(params: { agentId: string; userId: string }) {
-    const { agentId, userId } = params;
-    if (!userId || userId.length === 0) {
+  private resolveDirectSessionKey(storePath: string, sessionKey: string, agentId: string, channelId: string): string {
+    // 1. 传入 key 直接命中 entry → 直接用
+    const exact = getSessionEntry({ storePath, sessionKey });
+    if (exact) {
+      return sessionKey;
+    }
+    // 2. 前缀匹配：agent:<agentId>:<channelId>:direct:<...> 开头的最新会话
+    const prefix = `agent:${agentId}:${channelId}:direct:`;
+    try {
+      const summaries = listSessionEntries({ storePath });
+      let bestKey = '';
+      let bestUpdated = -1;
+      for (const s of summaries) {
+        if (!s.sessionKey.startsWith(prefix)) continue;
+        const updated = s.entry?.updatedAt ?? s.entry?.lastActivityAt ?? 0;
+        if (updated > bestUpdated) {
+          bestUpdated = updated;
+          bestKey = s.sessionKey;
+        }
+      }
+      if (bestKey) {
+        this.log(`resolveDirectSessionKey: ${sessionKey} -> ${bestKey} (前缀匹配最新会话)`, 'info');
+        return bestKey;
+      }
+    } catch (e) {
+      this.log(`resolveDirectSessionKey error: ${String(e)}`, 'error');
+    }
+    return sessionKey;
+  }
+
+  /**
+   * 查询当前会话的模型覆盖（用于 ChatPage 恢复选中状态）
+   * 2026-08-28 修复：客户端直接传 sessionKey（不再传 agentId+userId 让插件拼 key）
+   */
+  private async handleCurrentSessionModel(params: { sessionKey: string }) {
+    const { sessionKey } = params;
+    if (!sessionKey || sessionKey.length === 0) {
       return null;
     }
 
+    const agentId = sessionKey.split(':')[1];
     const { cfg, channelId } = this.options;
-    const sessionKey = `agent:${agentId}:${channelId}:direct:${userId.toLocaleLowerCase()}`;
     const storePath = resolveStorePath(cfg.session?.store, { agentId });
-    const entry = getSessionEntry({ storePath, sessionKey });
+    // 兼容历史遗留的无后缀 key：精确命中失败时前缀匹配最新 direct 会话
+    const realKey = this.resolveDirectSessionKey(storePath, sessionKey, agentId, channelId);
+    const entry = getSessionEntry({ storePath, sessionKey: realKey });
     if (!entry) return null;
 
     // 只返回用户主动设置的覆盖，不返回 auto fallback
