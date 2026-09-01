@@ -690,6 +690,16 @@ export class WSClient extends EventEmitter {
     return path.join(home, '.openclaw', `workspace-${agentId}`);
   }
 
+  /**
+   * 2026-09-01 扫描工作区时跳过的重型目录黑名单。
+   * agent 在工作区创建软件项目时会产生 node_modules/dist/build 等海量文件（几万~几十万），
+   * 全量递归扫描会导致 MQTT 返回超大 JSON，客户端工作区列表 30s 超时。
+   */
+  private static readonly SKIP_WORKSPACE_DIRS = new Set([
+    'node_modules', 'dist', 'build', '.next', 'target',
+    '.git', '.clawhub',
+  ]);
+
   /** 递归扫描工作区目录，跳过隐藏目录（.git, .clawhub, .openclaw 等） */
   private async scanWorkspaceDir(
     dirPath: string,
@@ -714,6 +724,11 @@ export class WSClient extends EventEmitter {
     for (const entry of entries) {
       // 跳过隐藏目录
       if (entry.isDirectory() && entry.name.startsWith('.')) continue;
+      // 2026-09-01 跳过软件项目重型目录（node_modules/dist/build 等），避免全量扫描卡死客户端
+      if (entry.isDirectory() && WSClient.SKIP_WORKSPACE_DIRS.has(entry.name)) {
+        this.log(`[workspace] 跳过重型目录: ${relativePrefix ? relativePrefix + '/' : ''}${entry.name}`, 'debug');
+        continue;
+      }
 
       const fullPath = path.join(dirPath, entry.name);
       const relativePath = relativePrefix
