@@ -1144,10 +1144,8 @@ export async function routeAndDispatchMessage(ctx: {
           const contents: string[] = payload.text ? [payload.text] : [];
           if (payload.mediaUrl || (payload.mediaUrls && payload.mediaUrls.length > 0)) {
             //处理媒体文件
-            let files: Array<string> = payload.mediaUrl ? [payload.mediaUrl] : []
-            if (payload.mediaUrls && payload.mediaUrls.length > 0) {
-              files = [...files, ...payload.mediaUrls]
-            }
+            // 2026-09-01 修复：mediaUrl 与 mediaUrls 可能同时携带同一文件（语音场景），去重避免重复发送导致空语音
+            let files: Array<string> = [...new Set([...(payload.mediaUrl ? [payload.mediaUrl] : []), ...(payload.mediaUrls ?? [])])]
             files.forEach(item => mediaFiles.push(item));
             logger.info(`account[${accountId}], reply media file >>> ${files.join(',')}`)
           }

@@ -37,13 +37,8 @@ export const dlOutbound = (): ChannelOutboundAdapter => {
             const { to, accountId, replyToId, threadId, payload } = ctx;
             const accId = accountId || DEFAULT_ACCOUNT_ID;
             logger.info(`${log_prefix} Notify[sendPayload] to[${to}], accountId=${accId}, replyToId=${replyToId}, threadId=${threadId}, text=${payload.text}`);
-            const mediaFile: Array<string> = [];
-            if (payload.mediaUrl) {
-                mediaFile.push(payload.mediaUrl);
-            }
-            if (payload.mediaUrls && payload.mediaUrls.length > 0) {
-                payload.mediaUrls.map(item => mediaFile.push(item));
-            }
+            // 2026-09-01 修复：mediaUrl 与 mediaUrls 可能同时携带同一文件（语音场景），去重避免重复发送导致空语音
+            const mediaFile: Array<string> = [...new Set([...(payload.mediaUrl ? [payload.mediaUrl] : []), ...(payload.mediaUrls ?? [])])];
             const text = payload.text ?? ''
             const dlClient = getClient(accId);
             return await dlClient.autoReply({
