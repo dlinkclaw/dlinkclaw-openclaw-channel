@@ -303,11 +303,16 @@ export class WSClient extends EventEmitter {
     });
   }
 
-  async listModels(): Promise<any> {
+  async listModels(agentId?: string): Promise<any> {
+    // 2026-09-06 适配 openclaw 9.2：models.list 需显式 agentId（多 agent 配置下无 owner 会报 INVALID_REQUEST）
+    const params: Record<string, unknown> = {};
+    if (agentId) {
+      params.agentId = agentId;
+    }
     return this.sendRequest({
       type: 'req',
       method: 'models.list',
-      params: {}
+      params
     });
   }
 

@@ -209,7 +209,8 @@ export class ClawServices extends EventEmitter {
 
         // 模型管理
         case 'models.list':
-          result = await this.handleListModels();
+          // 2026-09-06 适配 openclaw 9.2：models.list 需显式 agentId（多 agent 配置下无 owner 会报 INVALID_REQUEST）
+          result = await this.handleListModels(cmdMessage.params as { agentId?: string } | undefined);
           break;
 
         // 会话 
@@ -673,9 +674,38 @@ export class ClawServices extends EventEmitter {
     return usage;
   }
 
-  private async handleListModels(): Promise<any> {
-    const res = await this.client?.listModels();
-    return res?.models ?? []
+  private async handleListModels(params?: { agentId?: string }): Promise<any> {
+    // 2026-09-06 适配 openclaw 9.2：models.list RPC 要求显式 agentId（多 agent 配置无 owner 报 INVALID_REQUEST）。
+    // 客户端能带则带；未带时兜底解析默认 agent：systemAgent.agentId → entries 中 main → entries 第一个 → 'main'
+    let agentId = params?.agentId?.trim();
+    if (!agentId) {
+      const cfgAgents = (this.options.cfg as any)?.agents ?? {};
+      agentId = cfgAgents?.defaults?.systemAgent?.agentId
+        ?? (cfgAgents?.entries && typeof cfgAgents.entries === 'object'
+          ? (cfgAgents.entries.main ? 'main' : Object.keys(cfgAgents.entries)[0])
+          : undefined)
+        ?? 'main';
+    }
+    const res = await this.client?.listModels(agentId);
+    const models: Array<Record<string, unknown>> = Array.isArray(res?.models) ? res.models : (Array.isArray(res) ? res : []);
+    // 2026-09-06 适配 openclaw 9.2：模型目录 JSON 结构变化——
+    // 旧版每项 { id, name, provider, ... }；9.2 起 provider/model 合并为 key（如 "deepseek/deepseek-v4-flash"），
+    // 不再下发独立 provider/id 字段（客户端按 provider 分组、按 id 切换模型会失效）。
+    // 这里统一归一化为 7.1 语义：{ id: 纯模型名, key, provider, model: 纯模型名, name, ... }，
+    // 客户端（输入框切换/群成员模型切换/RelayDetail）无需改动即可恢复。
+    return models.map((m) => {
+      const id = String(m.id ?? m.key ?? '');
+      const key = String(m.key ?? id);
+      const rawProvider = m.provider ? String(m.provider) : '';
+      let provider = rawProvider;
+      let model = id;
+      if (!provider && key.includes('/')) {
+        const idx = key.indexOf('/');
+        provider = key.slice(0, idx);
+        model = key.slice(idx + 1);
+      }
+      return { ...m, id: model || key, key, provider, model: model || key };
+    });
   }
   //#endregion
 
