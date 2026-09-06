@@ -15,11 +15,13 @@ import type {
   AgentFilesListParams, AgentFilesGetParams,
 } from './types.js';
 import WSClient from './ws-client.js';
-import { PluginLogger } from 'openclaw/plugin-sdk';
+// 2026-09-06 适配 openclaw 2026.9.1：根入口已移除，改从 core 导入
+import { PluginLogger } from 'openclaw/plugin-sdk/core';
 import { getOpenclawPath, getExtCapabilitiesDir } from '../utils.js';
 import { applyModelOverrideToSessionEntry } from 'openclaw/plugin-sdk/model-session-runtime';
 import { getSessionEntry, patchSessionEntry, resolveStorePath, listSessionEntries } from 'openclaw/plugin-sdk/config-runtime';
-import { approveChannelPairingCode } from 'openclaw/plugin-sdk/conversation-runtime';
+// 2026-09-06 适配 openclaw 2026.9.1：approveChannelPairingCode 不再导出，改走宿主 RPC（见 gateway-rpc.ts）
+import { setGatewayClient, approvePairingRequest } from './gateway-rpc.js';
 import { DEFAULT_ACCOUNT_ID } from 'openclaw/plugin-sdk/core';
 import { markRunStopped } from '../runtime.js';
 
@@ -73,6 +75,8 @@ export class ClawServices extends EventEmitter {
         gatewayUrl: this.options.gatewayUrl,
         token: this.options.token
       });
+      // 2026-09-06 适配 openclaw 2026.9.1：注入 Gateway RPC 客户端（配对审批等宿主 RPC 用）
+      setGatewayClient(this.client);
 
       this.client!.on('onConnected', () => {
         this.log(`ws连接成功`, 'info');
@@ -287,9 +291,11 @@ export class ClawServices extends EventEmitter {
           result = await this.handlChatAbout(cmdMessage.params!);
           break;
         case 'pairing.approve':
-          const { code, empId, accountId } = cmdMessage.params ?? {};
+          // 2026-09-06 适配 openclaw 2026.9.1：审批改按 requestId（宿主 RPC），客户端由 onPairingRequest 事件获取；
+          // code 保留解析用于旧客户端兼容提示（9.1 起宿主 list 不再暴露 code，无法按 code 审批）
+          const { requestId, code, empId, accountId } = cmdMessage.params ?? {};
           //注意：accountId目前只能为 DEFAULT_ACCOUNT_ID, 本插件不需要使用多账户,服务端提供多帐户服务(openId提供AGENT路由),在安装插件时需提醒使用"default"
-          result = await this.handleApprove({ code, empId, accountId: accountId || DEFAULT_ACCOUNT_ID })
+          result = await this.handleApprove({ requestId, code, empId, accountId: accountId || DEFAULT_ACCOUNT_ID })
           break;
 
         // 工作区 / Artifact
@@ -864,19 +870,26 @@ export class ClawServices extends EventEmitter {
   //#endregion
 
   //#region -----------对码审批--------------
-  private async handleApprove(params: { code: string, empId: string, accountId: string }) {
-    const { code, empId, accountId } = params;
-    const res = await approveChannelPairingCode({
-      channel: this.options.channelId,
-      code,
-      accountId,
-    });
+  /**
+   * 2026-09-06 适配 openclaw 2026.9.1：对码审批改走宿主 RPC channels.pairing.approve（按 requestId）
+   * - 9.1 起 approveChannelPairingCode 不再从 plugin-sdk 导出（安全收敛：审批权与对码解耦、插件不再直写宿主 store）
+   * - requestId 由插件创建对码时通过 channels.pairing.list 获取，随 onPairingRequest 事件下发给客户端
+   * - notify=false：不触发宿主 notifyApproval（其内部 dlClient.approved 走 HTTP /guest/relayBot/approved，
+   *   服务端暂无该端点会 404 噪音）；服务端回调沿用下方 onPairingResult MQTT 事件（7.1 同款链路）
+   */
+  private async handleApprove(params: { requestId?: string, code?: string, empId?: string, accountId: string }) {
+    const { requestId, code, empId, accountId } = params;
+    if (!requestId) {
+      // 旧客户端只传 code：9.1 无公开按 code 审批 API，提示升级（重新对码后事件会带 requestId）
+      throw new Error(`审批失败:缺少 requestId${code ? `（code=${code} 已不被支持）` : ''}，请重新触发对码后重试`);
+    }
+    const res = await approvePairingRequest(this.options.channelId, accountId, requestId, false);
     if (res) {
       this.emit('onPairingResult', {
         approved: true,
-        senderId: res.id,
+        senderId: res.senderId,
         empId,
-        code
+        requestId,
       })
       return {
         success: true,
@@ -886,7 +899,7 @@ export class ClawServices extends EventEmitter {
         timestamp: Date.now()
       }
     }
-    throw new Error('审批失败:验证码无效或已过期!')
+    throw new Error('审批失败:配对请求无效或已过期!')
   }
   //#endregion
 
@@ -1212,6 +1225,8 @@ export class ClawServices extends EventEmitter {
   }
 
   cleanup(): void {
+    // 2026-09-06 适配 openclaw 2026.9.1：清理时同步重置 Gateway RPC 客户端引用
+    setGatewayClient(null);
     if (this.client) {
       this.client.disconnect();
       this.client.removeAllListeners();

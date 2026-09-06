@@ -1,6 +1,9 @@
 import { DLConfig, DLResolvedAccount } from "./client/types.js";
 import { DLClient } from "./client/dl-client.js";
-import { OpenClawConfig, PluginLogger, PluginRuntime } from "openclaw/plugin-sdk";
+// 2026-09-06 适配 openclaw 2026.9.1：根入口已移除，改从 core 导入
+import { OpenClawConfig, PluginLogger, PluginRuntime } from "openclaw/plugin-sdk/core";
+// 2026-09-06 适配 openclaw 2026.9.1：审批改按 requestId，经宿主 RPC list 获取（9.1 起按 code 审批 API 不再公开）
+import { listPairingRequests } from "./services/gateway-rpc.js";
 import { resolveDLAccount } from "./account.js";
 import { resolveAllowlistMatchSimple } from "openclaw/plugin-sdk/allow-from";
 import { addWildcardAllowFrom } from "openclaw/plugin-sdk/setup";
@@ -211,28 +214,35 @@ export async function checkDmPolicy(params: {
                 kind: 'block',
                 finish: true
             });
-            // 对码请求已创建，通过MQTT通知客户端可一键对码
-            client.publishEventToDLClient({
-                code,           // 对码验证码
-                channelId,      // 通道ID
-                senderId,       // 发送者ID,实质是relayBotId
-                relayType: "OpenClaw"
-            }, 'onPairingRequest', '0').catch(err =>
-                logger.error(`${logPreTag}发送对码事件失败:${String(err)}`)
-            );
-
         } else {
             logger.error(`${logPreTag}blocked unauthorized sender=${senderId} (dmPolicy=${dmPolicy})`);
-            //再发送对验证码要求对码
-            client.publishEventToDLClient({
-                code,           // 对码验证码
-                channelId,      // 通道ID
-                senderId,       // 发送者ID,实质是relayBotId
-                relayType: "OpenClaw"
-            }, 'onPairingRequest', '0').catch(err =>
-                logger.error(`${logPreTag}发送对码事件失败:${String(err)}`)
-            );
         }
+
+        // 2026-09-06 适配 openclaw 2026.9.1：审批改按 requestId（宿主 RPC），
+        // 通过 channels.pairing.list 获取本次 requestId 随事件下发；
+        // 同 sender 幂等 upsert(id=senderId)，pending 中按 senderId 唯一定位
+        let pairingRequestId: string | undefined;
+        try {
+            const pending = await listPairingRequests(channelId, account.accountId);
+            pairingRequestId = pending.find(r => r.senderId === senderId)?.requestId;
+            if (!pairingRequestId) {
+                logger.warn(`${logPreTag}list 未匹配到 sender=${senderId} 的配对请求`);
+            }
+        } catch (e) {
+            logger.error(`${logPreTag}获取 requestId 失败:${String(e)}`);
+        }
+
+        // 对码请求已创建/已存在，通过MQTT通知客户端可一键对码（带 requestId 供 9.1 审批使用）
+        const pairingEvent = {
+            code,           // 对码验证码
+            requestId: pairingRequestId, // 2026-09-06 新增：宿主配对请求 id（9.1 起审批必需）
+            channelId,      // 通道ID
+            senderId,       // 发送者ID,实质是relayBotId
+            relayType: "OpenClaw"
+        };
+        client.publishEventToDLClient(pairingEvent, 'onPairingRequest', '0').catch(err =>
+            logger.error(`${logPreTag}发送对码事件失败:${String(err)}`)
+        );
     }
     logger.warn(`account[${account.accountId}] sender=${senderId} access denied`)
     return { allowed: false };

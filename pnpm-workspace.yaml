@@ -1,5 +1,11 @@
-onlyBuiltDependencies:
-  - '@google/genai'
-  - openclaw
-  - protobufjs
-  - tree-sitter-bash
+allowBuilds:
+  '@google/genai': true
+  koffi: true
+  openclaw: true
+  protobufjs: true
+  tree-sitter-bash: true
+# pnpm 10 默认阻止依赖 install 脚本（ERR_PNPM_IGNORED_BUILDS）。
+# 以下为 openclaw 官方依赖树所需 build 脚本，全部批准：
+# - openclaw: preinstall 版本/包管理器检查（2026-09-06 需 Node >=24.15.0 <25 等）
+# - koffi / tree-sitter-bash: 原生绑定编译，忽略会导致运行时缺模块
+# - @google/genai / protobufjs: preinstall/postinstall 辅助脚本（无害）

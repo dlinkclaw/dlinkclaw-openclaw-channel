@@ -3,7 +3,8 @@
 // ============================================================================
 
 import { fileTypeFromBuffer } from "file-type";
-import { OpenClawConfig, PluginLogger, PluginRuntime } from "openclaw/plugin-sdk";
+// 2026-09-06 适配 openclaw 2026.9.1：根入口已移除，改从 core 导入
+import { OpenClawConfig, PluginLogger, PluginRuntime } from "openclaw/plugin-sdk/core";
 import { ATTACHMENT_KINK, DEFAULT_MEDIA_MAX_MB, FILE_DOWNLOAD_TIMEOUT_MS } from "./const.js";
 import { withTimeout } from "./timeout.js";
 import { dlinkDecryptFile, ewxDecryptFile, md5 } from "./crypto.js";

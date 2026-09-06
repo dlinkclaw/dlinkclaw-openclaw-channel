@@ -1,4 +1,6 @@
-import { ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk";
+// 2026-09-06 适配 openclaw 2026.9.1：根入口已移除；ClawdbotConfig 别名已移除，改 OpenClawConfig 别名；RuntimeEnv 改 runtime-env 导入
+import { OpenClawConfig as ClawdbotConfig } from "openclaw/plugin-sdk/core";
+import { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { listDuolinkConfiguredAccounts, resolveDLAccount } from "./account.js";
 import { getDLLogger, getDLRuntime } from "./runtime.js";
 import { DLClient, DLMessageContext } from "./client/dl-client.js";
@@ -250,7 +252,9 @@ async function duolinkMessageHandler(dlCtx: DLMessageContext, client: DLClient) 
 
         logger.warn(`${accountLogInfo} senderAllowedForCommands >>> ${senderAllowedForCommands}`);
 
-        const useAccessGroups = cfg.commands?.useAccessGroups ?? true;
+        // 2026-09-06 适配 openclaw 2026.9.1：CommandsConfig 类型已移除 useAccessGroups 字段，
+        // 运行时配置值仍可能由 openclaw.json 下发，这里保持兼容读取（缺省 true）
+        const useAccessGroups = (cfg.commands as { useAccessGroups?: boolean } | undefined)?.useAccessGroups ?? true;
         commandAuthorized = shouldComputeCommandAuthorized
             ? core.channel.commands.resolveCommandAuthorizedFromAuthorizers({
                 useAccessGroups,

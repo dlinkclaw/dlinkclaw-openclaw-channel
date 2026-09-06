@@ -1,4 +1,5 @@
-import { OpenClawConfig, PluginLogger, PluginRuntime, ReplyPayload } from "openclaw/plugin-sdk";
+// 2026-09-06 适配 openclaw 2026.9.1：根入口已移除，改从 core 导入
+import { OpenClawConfig, PluginLogger, PluginRuntime, ReplyPayload } from "openclaw/plugin-sdk/core";
 import { BotType, DLBaseBody, DLFileBody, DLImageBody, DLKind, DLMessagePayload, DLMixedBody, DLMsgType, DLQuoteBase, DLQuoteFile, DLQuoteImage, DLQuoteMixed, DLQuoteText, DLQuoteVideo, DLQuoteVoice, DLResolvedAccount, DLTextBody, DLVideoBody, DLVoiceBody, FromPerson, ToAgent } from "./types.js";
 import { DLClient } from "./dl-client.js";
 import { MEDIA_DOCUMENT_PLACEHOLDER, MEDIA_IMAGE_PLACEHOLDER, MEDIA_VIDEO_PLACEHOLDER, MEDIA_VOICE_PLACEHOLDER } from "./const.js";
@@ -1066,7 +1067,8 @@ export async function buildMessageContext(params: {
     messageIdFull: msg.msgId,
     access: {
       commands: {
-        authorized: commandAuthorized
+        // 2026-09-06 适配 openclaw 2026.9.1：access.commands.authorized 由可选改为必填 boolean
+        authorized: commandAuthorized ?? false
       }
     },
     command: {
@@ -1089,8 +1091,8 @@ export async function buildMessageContext(params: {
     //finalize: FinalizeInboundContextFn,
     finalizeOptions: {
       forceBodyForAgent: true,
-      forceChatType: true,
-      forceConversationLabel: true
+      forceChatType: true
+      // 2026-09-06 适配 openclaw 2026.9.1：forceConversationLabel 选项已移除，conversation.label 直接生效
     }
     //extra?: Record<string, unknown>;
   })

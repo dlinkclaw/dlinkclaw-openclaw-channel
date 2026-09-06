@@ -1,8 +1,10 @@
-import { ChannelAccountSnapshot, ChannelSetupAdapter, ChannelSetupWizard, ChannelStatusIssue, OpenClawConfig } from "openclaw/plugin-sdk";
+// 2026-09-06 适配 openclaw 2026.9.1：根入口 plugin-sdk / channel-runtime 已移除，改从聚焦子路径导入
+import { ChannelAccountSnapshot, OpenClawConfig } from "openclaw/plugin-sdk/core";
+import { ChannelSetupAdapter, ChannelSetupWizard } from "openclaw/plugin-sdk/channel-setup";
+import { ChannelStatusIssue, ChannelStatusAdapter } from "openclaw/plugin-sdk/channel-contract";
 import { DLConfig, DLResolvedAccount } from "./client/types.js";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/core";
 import { ChannelSetupWizardAdapter } from "openclaw/plugin-sdk/setup";
-import { ChannelStatusAdapter } from "openclaw/plugin-sdk/channel-runtime";
 import { createDefaultChannelRuntimeState } from "openclaw/plugin-sdk/channel-status";
 import { getDLClient } from "./client/client-manager.js";
 import { getDLLogger } from "./runtime.js";

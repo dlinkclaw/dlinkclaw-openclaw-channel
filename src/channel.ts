@@ -1,10 +1,12 @@
 import pkg from '../package.json' with{type: 'json'};
-import { ChannelPlugin } from "openclaw/plugin-sdk";
+// 2026-09-06 适配 openclaw 2026.9.1：根入口已移除，ChannelPlugin 改从 core 导入
+import { ChannelPlugin } from "openclaw/plugin-sdk/core";
 import { monitorDuolinkProvider } from "./monitor.js";
 import { DLResolvedAccount } from "./client/types.js";
 import { checkConfigured, deleteDLAccount, listDLConfiguredAccountIds, resolveDefaultDLAccountId, resolveDLAccount, setDLChannelAccountEnabled, dlSetupWizard, dlSetupAdapter, dlAccountStatus, dlDescribeAccount, dlInspectAccount } from "./account.js";
 import { formatPairingApproveHint } from "openclaw/plugin-sdk/core";
-import { ChannelResolveResult } from "openclaw/plugin-sdk/channel-runtime";
+// 2026-09-06 适配 openclaw 2026.9.1：channel-runtime 已移除，ChannelResolveResult 改从 channel-contract 导入
+import { ChannelResolveResult } from "openclaw/plugin-sdk/channel-contract";
 import { getDLLogger } from "./runtime.js";
 import { dlOutbound, dlPairing } from "./outbound.js";
 

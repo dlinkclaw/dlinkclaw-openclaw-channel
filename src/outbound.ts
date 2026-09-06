@@ -2,7 +2,10 @@ import { ChannelOutboundAdapter, DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/
 import { getDLLogger, getDLRuntime } from "./runtime.js";
 import { TEXT_CHUNK_LIMIT } from "./client/const.js";
 import { getDLClient } from "./client/client-manager.js";
-import { ChannelPairingAdapter } from "openclaw/plugin-sdk/channel-runtime";
+// 2026-09-06 适配 openclaw 2026.9.1：channel-runtime 已移除且 ChannelPairingAdapter 不再公开导出，
+// 通过 9.1 channel-pairing 工厂的返回类型派生（import type 仅类型引用，无运行时成本）
+import type { createTextPairingAdapter } from "openclaw/plugin-sdk/channel-pairing";
+type ChannelPairingAdapter = ReturnType<typeof createTextPairingAdapter>;
 
 const log_prefix = "[Outbound.ts]" as const;
 

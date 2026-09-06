@@ -4,7 +4,8 @@ import path from 'path';
 
 import axios, { AxiosInstance, AxiosResponse, CreateAxiosDefaults } from 'axios';
 import { generateSignature, getDeviceId } from './crypto.js';
-import { PluginLogger } from 'openclaw/plugin-sdk';
+// 2026-09-06 适配 openclaw 2026.9.1：根入口已移除，改从 core 导入
+import { PluginLogger } from 'openclaw/plugin-sdk/core';
 import { FILE_LIMITS, IMAGE_EXTS } from './const.js';
 import mime from 'mime-types';
 import FormData from 'form-data';

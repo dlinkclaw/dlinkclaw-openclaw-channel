@@ -1,5 +1,6 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
+// 2026-09-06 适配 openclaw 2026.9.1：根入口 plugin-sdk 已移除，改从聚焦子路径 core 导入
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import { emptyPluginConfigSchema } from "openclaw/plugin-sdk/core";
 import { channelMeta, dlChannel, LOG_TAG } from "./src/channel.js";
 import { setDLLogger, setDLRuntime, isRunStopped } from "./src/runtime.js";
 

@@ -6,7 +6,8 @@
 import { DLClient } from "../client/dl-client.js";
 import { AskAgentReply, ClawServiceOptions, CmdMessage, CmdResponse, ReadlineType } from "./types.js";
 import ClawServices from "./services.js";
-import { PluginLogger } from "openclaw/plugin-sdk";
+// 2026-09-06 适配 openclaw 2026.9.1：根入口已移除，改从 core 导入
+import { PluginLogger } from "openclaw/plugin-sdk/core";
 
 const AGENT_RELAY_MAP: Map<string, string> = new Map();
 //const BATCH_COUNT = 10;

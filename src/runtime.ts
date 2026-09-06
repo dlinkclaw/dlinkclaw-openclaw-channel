@@ -1,4 +1,5 @@
-import type { PluginLogger, PluginRuntime } from "openclaw/plugin-sdk";
+// 2026-09-06 适配 openclaw 2026.9.1：根入口已移除，改从 core 导入
+import type { PluginLogger, PluginRuntime } from "openclaw/plugin-sdk/core";
 let runtime: PluginRuntime | null = null;
 let logger: PluginLogger | null = null;
 export function setDLRuntime(next: PluginRuntime) {

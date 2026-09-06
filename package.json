@@ -1,6 +1,6 @@
 {
   "name": "dlinkclaw-openclaw",
-  "version": "2026.8.24-alpha.11",
+  "version": "2026.9.06-alpha.01",
   "description": "DLinkClaw OpenClaw channel plugin — 朵联 OpenClaw 接入通道",
   "keywords": [
     "DLinkClaw",
@@ -54,7 +54,7 @@
     "typescript": "^5.3.3"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.7.1"
+    "openclaw": ">=2026.9.1"
   },
   "openclaw": {
     "extensions": [

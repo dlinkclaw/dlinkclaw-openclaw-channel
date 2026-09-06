@@ -1,6 +1,7 @@
 
 import EventEmitter from 'events';
-import { OpenClawConfig, PluginLogger } from 'openclaw/plugin-sdk';
+// 2026-09-06 适配 openclaw 2026.9.1：根入口已移除，改从 core 导入
+import { OpenClawConfig, PluginLogger } from 'openclaw/plugin-sdk/core';
 import { AccumulatorsStatus, AutoReplyOpts, buildDLReplyMessage, messagePreviewHandler } from './message.js';
 import { BotType, DLArchiveSession, DLKind, DLMessage, DLMessagePayload, DLResolvedAccount, MessageStatus } from './types.js';
 import mqtt from 'mqtt';

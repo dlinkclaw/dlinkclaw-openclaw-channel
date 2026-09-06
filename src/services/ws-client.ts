@@ -890,6 +890,18 @@ export class WSClient extends EventEmitter {
     this.send(opts);
   }
 
+  /**
+   * 2026-09-06 适配 openclaw 2026.9.1：通用 Gateway 方法调用（配对审批等宿主 RPC）
+   * 9.1 起部分能力（如 channels.pairing.approve）只以宿主 RPC 形式提供，
+   * 插件通过已认证的 Gateway WebSocket 调用，参数透传宿主 handler。
+   */
+  async callGatewayMethod(method: string, params?: unknown): Promise<any> {
+    if (!this.isReady()) {
+      throw new Error(`Gateway WebSocket 未连接，无法调用 ${method}`);
+    }
+    return this.sendRequest({ type: 'req', method, params });
+  }
+
   private sendRequest(message: Omit<RequestFrame, 'id'>): Promise<any> {
     const id = this.generateId();
     const fullMessage: RequestFrame = { ...message, id };
