@@ -1,6 +1,6 @@
 {
   "name": "workrelay-speak",
-  "displayName": "语音合成（TTS）",
+  "displayName": "语音合成（Kokoro）",
   "description": "Agent 语音回复：Docker 部署 Voicebox（Kokoro 引擎），50+ 预设音色，轻量开箱即用",
   "requirements": [
     {
@@ -47,10 +47,10 @@
     },
     {
       "id": "registry",
-      "label": "镜像仓库可达（阿里云国内公开仓库）",
+      "label": "镜像仓库可达（ghcr.io / 国内公共仓库，自动回退）",
       "expect": "能访问阿里云镜像仓库",
-      "check": "timeout 15 docker manifest inspect crpi-3zj44dlldca7vawm.cn-hangzhou.personal.cr.aliyuncs.com/shiduo/workrelay-tts:20260813 >/dev/null 2>&1 || timeout 10 curl -sI https://registry.cn-hangzhou.aliyuncs.com >/dev/null 2>&1",
-      "hint": "无法访问阿里云镜像仓库 registry.cn-hangzhou.aliyuncs.com，请检查网络后重试。国内公开镜像无需登录，网络通畅即可拉取"
+      "check": "timeout 4 docker manifest inspect ghcr.io/rockychen2016/dlinkclaw-tts:kokoro-20260914 >/dev/null 2>&1 || timeout 4 docker manifest inspect registry.cn-hangzhou.aliyuncs.com/shiduo/dlinkclaw-tts:kokoro-20260914 >/dev/null 2>&1",
+      "hint": "镜像源不可达。国际源: ghcr.io（GitHub Container Registry，公开免登录）；国内源: registry.cn-hangzhou.aliyuncs.com（待发布）。安装时自动按区域优先并回退"
     },
     {
       "id": "gpu",

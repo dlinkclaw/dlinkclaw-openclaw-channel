@@ -1169,10 +1169,13 @@ export class ClawServices extends EventEmitter {
       fs.mkdirSync(path.dirname(logFile), { recursive: true });
     } catch { /* ignore */ }
     const outFd = fs.openSync(logFile, 'a');
+    // 2026-09-14 镜像源区域：客户端传入（cn=国内阿里云公共仓库优先 / intl=国际 Docker Hub 优先 / auto=自动）
+    // install.sh 会按该值优先拉取并自动回退到另一源。
+    const region = params?.region === 'cn' || params?.region === 'intl' ? String(params.region) : 'auto';
     const child = spawn('bash', [scriptPath], {
       detached: true,
       stdio: ['ignore', outFd, outFd],
-      env: { ...process.env },
+      env: { ...process.env, WR_IMAGE_REGION: region },
     });
 
     // 2026-08-10 修复：spawn 成功 ≠ 脚本执行成功。脚本内部立即失败（权限/依赖检查）

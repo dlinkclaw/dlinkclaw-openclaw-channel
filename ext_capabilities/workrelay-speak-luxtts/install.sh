@@ -16,8 +16,44 @@ VB_HOST="${WR_VOICEBOX_HOST:-127.0.0.1}"
 VB_PORT="${WR_VOICEBOX_LUXTTS_PORT:-17601}"
 VB_CONTAINER_PORT=17493
 # 阿里云镜像：石头哥推送后使用（含 LuxTTS 模型 + Kokoro + 英文补丁）
-VB_IMAGE="${WR_VOICEBOX_IMAGE:-crpi-3zj44dlldca7vawm.cn-hangzhou.personal.cr.aliyuncs.com/shiduo/workrelay-tts-luxtts:20260815}"
+# 2026-09-14 双源：国内=阿里云公共仓库；国际=GitHub Container Registry (ghcr.io)
+# 2026-09-14 改名为 dlinkclaw-tts（统一仓库名，tag 区分模型）
+IMG_TAG="${WR_IMAGE_TAG:-luxtts-20260914}"
+# 国内源：暂未发布（留空自动跳过）；发布后填入 registry.cn-hangzhou.aliyuncs.com/NAMESPACE/dlinkclaw-tts:${IMG_TAG}
+IMG_CN="${WR_IMAGE_CN:-}"
+IMG_INTL="${WR_IMAGE_INTL:-ghcr.io/rockychen2016/dlinkclaw-tts:${IMG_TAG}}"
+VB_IMAGE=""
 INSTALL_DIR="$(dirname "$(readlink -f "$0")")"
+
+# ── 2026-09-14 镜像双源（国内=阿里云公共仓库 / 国际=ghcr.io）──
+# 按 WR_IMAGE_REGION（auto|cn|intl）优先尝试，失败自动回退另一源；WR_VOICEBOX_IMAGE 可显式覆盖。
+IMAGE_CANDIDATES=()
+if [ -n "${WR_VOICEBOX_IMAGE:-}" ]; then
+  IMAGE_CANDIDATES=("$WR_VOICEBOX_IMAGE")
+else
+  # 2026-09-14：国内源暂未发布（IMG_CN 为空则自动跳过），默认国际源优先；国内源上架后自动生效
+  case "${WR_IMAGE_REGION:-auto}" in
+    cn)   CAND_PRIMARY="$IMG_CN";   CAND_SECONDARY="$IMG_INTL" ;;
+    intl) CAND_PRIMARY="$IMG_INTL"; CAND_SECONDARY="$IMG_CN" ;;
+    *)    CAND_PRIMARY="$IMG_INTL"; CAND_SECONDARY="$IMG_CN" ;;
+  esac
+  [ -n "$CAND_PRIMARY" ] && IMAGE_CANDIDATES+=("$CAND_PRIMARY")
+  [ -n "$CAND_SECONDARY" ] && IMAGE_CANDIDATES+=("$CAND_SECONDARY")
+fi
+
+pull_image_with_fallback() {
+  local log="$1"
+  for img in "${IMAGE_CANDIDATES[@]}"; do
+    echo "  → 尝试镜像源: $img"
+    if docker pull "$img" > "$log" 2>&1; then
+      VB_IMAGE="$img"
+      return 0
+    fi
+    echo "    ⚠ 该源拉取失败，尝试下一个..."
+  done
+  return 1
+}
+
 
 echo "============================================"
 echo "  WorkRelay 语音合成（LuxTTS 克隆声）- 一键安装"
@@ -123,12 +159,12 @@ echo -e "${GREEN}空闲${NC}"
 # ── 拉取镜像 ──
 echo -n "[5/6] 拉取 Voicebox (LuxTTS) 镜像... "
 mkdir -p "$VB_DIR"
-if docker pull "$VB_IMAGE" > /tmp/wr-pull-luxtts.log 2>&1; then
-  echo -e "${GREEN}OK${NC} ($(docker images --format '{{.Repository}}:{{.Tag}}' "$VB_IMAGE" | head -1))"
+if pull_image_with_fallback /tmp/wr-pull-luxtts.log; then
+  echo -e "${GREEN}OK${NC} ($VB_IMAGE)"
 else
   echo -e "${RED}失败${NC}"
   tail -5 /tmp/wr-pull-luxtts.log
-  echo "错误：拉取镜像失败，检查网络连接"
+  echo "错误：所有镜像源均拉取失败，检查网络连接（国内=阿里云公共仓库 / 国际=ghcr.io）"
   exit 1
 fi
 
