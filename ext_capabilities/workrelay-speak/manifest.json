@@ -1,0 +1,63 @@
+{
+  "name": "workrelay-speak",
+  "displayName": "语音合成（TTS）",
+  "description": "Agent 语音回复：Docker 部署 Voicebox（Kokoro 引擎），50+ 预设音色，轻量开箱即用",
+  "requirements": [
+    {
+      "id": "os",
+      "label": "操作系统",
+      "expect": "Linux",
+      "check": "uname -s | grep -qi linux",
+      "hint": "TTS 依赖 Docker，仅支持 Linux（Windows 请用 WSL2）"
+    },
+    {
+      "id": "docker",
+      "label": "Docker 已安装",
+      "expect": "已安装 docker",
+      "check": "command -v docker >/dev/null 2>&1",
+      "hint": "未找到 Docker，请先安装：sudo apt install docker.io docker-compose-v2"
+    },
+    {
+      "id": "docker_access",
+      "label": "Docker 可访问（权限）",
+      "expect": "docker info 可正常执行",
+      "check": "docker info >/dev/null 2>&1 || (id -nG | grep -qw docker && sg docker -c 'docker info' >/dev/null 2>&1) || sudo -n docker info >/dev/null 2>&1",
+      "hint": "Docker 无权限。一次性解决（需 sudo 密码一次）：① sudo systemctl start docker ② sudo usermod -aG docker $USER（$USER 换成 openclaw 运行用户，whoami 可查）③ openclaw gateway restart 后重试"
+    },
+    {
+      "id": "memory",
+      "label": "内存 ≥ 6GB",
+      "expect": "≥ 6GB 可用",
+      "check": "[ $(free -m | awk '/^Mem:/{print $2}') -ge 6144 ]",
+      "hint": "当前内存不足，TTS 至少需要 6GB 内存"
+    },
+    {
+      "id": "disk",
+      "label": "磁盘 ≥ 10GB",
+      "expect": "≥ 10GB 可用",
+      "check": "[ $(df -BM \"$HOME\" | tail -1 | awk '{print $4}' | sed 's/M//') -ge 10240 ]",
+      "hint": "可用空间不足，镜像+模型约需 6GB，建议预留 10GB"
+    },
+    {
+      "id": "network",
+      "label": "外网可达（GitHub）",
+      "expect": "能访问 github.com",
+      "check": "curl -sI --max-time 5 https://github.com >/dev/null 2>&1",
+      "hint": "无法访问 GitHub，将无法克隆 Voicebox 仓库和拉取 Docker 镜像"
+    },
+    {
+      "id": "registry",
+      "label": "镜像仓库可达（阿里云国内公开仓库）",
+      "expect": "能访问阿里云镜像仓库",
+      "check": "timeout 15 docker manifest inspect crpi-3zj44dlldca7vawm.cn-hangzhou.personal.cr.aliyuncs.com/shiduo/workrelay-tts:20260813 >/dev/null 2>&1 || timeout 10 curl -sI https://registry.cn-hangzhou.aliyuncs.com >/dev/null 2>&1",
+      "hint": "无法访问阿里云镜像仓库 registry.cn-hangzhou.aliyuncs.com，请检查网络后重试。国内公开镜像无需登录，网络通畅即可拉取"
+    },
+    {
+      "id": "gpu",
+      "label": "GPU 加速（可选）",
+      "expect": "检测到 NVIDIA GPU 时合成更快",
+      "check": "if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi -L >/dev/null 2>&1 && exit 0; fi; exit 0",
+      "hint": "未检测到 NVIDIA 独显，将使用 CPU 合成（慢但可用）；有 NVIDIA GPU 时自动启用 CUDA 加速"
+    }
+  ]
+}

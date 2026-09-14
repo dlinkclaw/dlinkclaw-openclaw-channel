@@ -1,0 +1,42 @@
+{
+  "name": "workrelay-transcribe",
+  "displayName": "语音转录（STT）",
+  "description": "语音消息转文字：本地 faster-whisper 转录，无需联网",
+  "requirements": [
+    {
+      "id": "os",
+      "label": "操作系统",
+      "expect": "Linux / macOS",
+      "check": "uname -s | grep -qiE 'linux|darwin'",
+      "hint": "仅支持 Linux/macOS（Windows 请用 WSL2）"
+    },
+    {
+      "id": "python",
+      "label": "Python 3.8+",
+      "expect": "已安装 python3",
+      "check": "command -v python3 >/dev/null 2>&1 && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)'",
+      "hint": "未找到 Python 3.8+，请先安装 Python"
+    },
+    {
+      "id": "pip",
+      "label": "pip 可用",
+      "expect": "pip3 或 python3 -m pip",
+      "check": "command -v pip3 >/dev/null 2>&1 || python3 -m pip --version >/dev/null 2>&1",
+      "hint": "未找到 pip 时，安装脚本会自动用 python3 -m ensurepip --user 用户级自举，无需手动安装"
+    },
+    {
+      "id": "disk",
+      "label": "磁盘 ≥ 2.5GB",
+      "expect": "≥ 2.5GB 可用",
+      "check": "[ $(df -BM \"$HOME\" | tail -1 | awk '{print $4}' | sed 's/M//') -ge 2560 ]",
+      "hint": "可用空间不足，模型约需 460MB，建议预留 1GB"
+    },
+    {
+      "id": "network",
+      "label": "外网可达（HuggingFace 或镜像）",
+      "expect": "能访问 huggingface.co 或 hf-mirror.com",
+      "check": "curl -sI --max-time 5 https://huggingface.co >/dev/null 2>&1 || curl -sI --max-time 5 https://hf-mirror.com >/dev/null 2>&1",
+      "hint": "无法访问 HuggingFace 及国内镜像，将无法下载 Whisper 模型"
+    }
+  ]
+}

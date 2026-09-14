@@ -1,0 +1,376 @@
+#!/bin/bash
+# WorkRelay 语音合成（TTS）一键安装脚本
+# 通过 Docker 部署 Voicebox（jamiepine/voicebox），自动配置 OpenClaw
+set -eo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+VB_DIR="$HOME/.workrelay/voicebox"
+VB_HOST="${WR_VOICEBOX_HOST:-127.0.0.1}"
+VB_PORT="${WR_VOICEBOX_PORT:-17493}"
+VB_DOCKER_PORT="${WR_VOICEBOX_DOCKER_PORT:-17600}"
+INSTALL_DIR="$(dirname "$(readlink -f "$0")")"
+
+echo "============================================"
+echo "  WorkRelay 语音合成（TTS）- 一键安装"
+echo "============================================"
+echo ""
+
+# ── 系统检查 ──
+echo -n "[1/7] 检查系统环境... "
+
+OS="$(uname -s)"
+case "$OS" in
+  Linux)  ;;
+  *)
+    echo -e "${RED}失败${NC}"
+    echo "错误：当前仅支持 Linux（TTS 需要 Docker）"
+    exit 1
+    ;;
+esac
+
+# 2026-08-11 修复：snap 安装的 docker 位于 /snap/bin，spawn 环境的 PATH 不含该目录，
+# 导致 command -v docker 误判"未找到"。必须在 docker 检测之前补全 PATH。
+export PATH="$PATH:/snap/bin:/usr/local/bin"
+
+if ! command -v docker &>/dev/null; then
+  echo -e "${RED}失败${NC}"
+  echo "错误：未找到 Docker，请先安装 Docker"
+  echo "  Ubuntu: sudo apt install docker.io docker-compose-v2"
+  exit 1
+fi
+
+if ! docker info &>/dev/null 2>&1; then
+  # 2026-08-11 修复：docker 权限自适应。当前用户不在 docker 组时（docker.sock 属 root:root），
+  # 若检测到免密 sudo（sudo -n）可执行 docker，则用函数包装 docker 命令，脚本后续所有
+  # docker 调用（compose up / ps 等）自动走 sudo，无需用户手动加组/重新登录。
+  if sudo -n docker info &>/dev/null 2>&1; then
+    echo "  ⚠ 当前用户无 docker 组权限，检测到免密 sudo，自动使用 sudo 执行 docker"
+    docker() { sudo docker "$@"; }
+  else
+    echo -e "${RED}失败${NC}"
+    echo "错误：Docker 未运行或无权限，请执行："
+    echo "  sudo systemctl start docker"
+    echo "  sudo usermod -aG docker \$USER  (需要重新登录)"
+    echo "  或为当前用户配置免密 sudo 后重试"
+    exit 1
+  fi
+fi
+
+echo -e "${GREEN}OK${NC} ($(docker --version | head -1), $(uname -o))"
+
+# 2026-08-13 方案A：snap 版 docker 的 compose 插件与 docker CLI 客户端受 AppArmor 隔离，
+# 读不了 $HOME 下的文件（compose 报 permission denied、build 报 open Dockerfile: no such file），
+# 只有 dockerd daemon 放行 $HOME（所以 docker run 正常）。检测到 snap docker 时，
+# 项目目录改用 /var/snap/docker/common/（AppArmor 明确放行 rw），compose/build/run 全通。
+if [ -d /var/snap/docker/common ]; then
+  VB_DIR="/var/snap/docker/common/workrelay-voicebox"
+  echo "  ℹ 检测到 snap docker，项目目录使用 $VB_DIR（AppArmor 放行读写）"
+  # /var/snap/docker/common 属 root，当前用户无写权限：需 sudo 预创建项目目录并移交给当前用户，
+  # 后续 git clone / compose 写文件（override/日志）不再需要提权
+  if [ -d "$VB_DIR" ]; then
+    sudo -n chown -R "$(id -u):$(id -g)" "$VB_DIR" 2>/dev/null || true
+  elif ! sudo -n mkdir -p "$VB_DIR" 2>/dev/null; then
+    echo -e "${RED}失败${NC}"
+    echo "错误：无法创建 $VB_DIR（需要免密 sudo，或手动执行: sudo mkdir -p $VB_DIR && sudo chown \$USER:\$USER $VB_DIR）"
+    exit 1
+  fi
+  sudo -n chown "$(id -u):$(id -g)" "$VB_DIR" 2>/dev/null || true
+fi
+
+# ── 磁盘空间 ──
+echo -n "[2/7] 检查磁盘空间... "
+# 2026-08-13：snap 模式下 VB_DIR 在 /var/snap/docker/common（可能与 $HOME 不同分区），
+# 磁盘检查以实际项目目录所在分区为准
+DF_TARGET="$VB_DIR"; [ -d "$DF_TARGET" ] || DF_TARGET="$HOME"
+AVAIL=$(df -BM "$DF_TARGET" | tail -1 | awk '{print $4}' | sed 's/M//')
+if [ "$AVAIL" -lt 10000 ]; then
+  echo -e "${RED}不足${NC}"
+  echo "错误：可用空间 ${AVAIL}MB，至少需要 10GB（Docker 镜像 + 模型 ~6GB）"
+  exit 1
+fi
+echo -e "${GREEN}OK${NC} (可用 ${AVAIL}MB)"
+
+# ── 内存检查 ──
+echo -n "[3/7] 检查内存... "
+RAM=$(free -m | awk '/^Mem:/{print $2}')
+if [ "$RAM" -lt 6000 ]; then
+  echo -e "${RED}不足 (${RAM}MB)${NC}"
+  echo "错误：至少需要 6GB 内存，当前仅 ${RAM}MB"
+  exit 1
+fi
+echo -e "${GREEN}OK${NC} (${RAM}MB)"
+
+# ── 端口检查 ──
+echo -n "[4/7] 检查端口 $VB_PORT... "
+if ss -tlnp 2>/dev/null | grep -q ":$VB_PORT "; then
+  echo -e "${YELLOW}已被占用${NC}"
+  echo "提示：端口 $VB_PORT 已被占用，将使用 $VB_DOCKER_PORT"
+  VB_ACTUAL_PORT=$VB_DOCKER_PORT
+else
+  echo -e "${GREEN}空闲${NC}"
+  VB_ACTUAL_PORT=$VB_PORT
+fi
+
+# ── 克隆 Voicebox 仓库 ──
+echo -n "[5/7] 克隆 Voicebox 仓库... "
+# 2026-08-13：snap 模式下 VB_DIR 可能已被 [1/7] 预创建为空目录，
+# 空目录不能算"已存在"，否则会跳过 clone 导致后面找不到 Dockerfile
+if [ -d "$VB_DIR" ] && [ -n "$(ls -A "$VB_DIR" 2>/dev/null)" ]; then
+  echo "已存在，更新..."
+  cd "$VB_DIR" && git pull --quiet 2>/dev/null || true
+else
+  mkdir -p "$VB_DIR"
+  git clone --quiet https://github.com/jamiepine/voicebox.git "$VB_DIR" 2>&1 || {
+    echo -e "${RED}失败${NC}"
+    echo "错误：克隆仓库失败，检查网络连接"
+    exit 1
+  }
+fi
+cd "$VB_DIR"
+
+# 2026-08-13：Kokoro 中文 pipeline 英文朗读修复（英文被逐字母日式读出，如 Hello -> L.O.H.O.R.Y.O.）。
+# clone 后自动 patch 源码，build 出的镜像自带修复——新用户启用 TTS 一步到位，无需手动操作。
+if [ -f "$INSTALL_DIR/patch-kokoro-en.py" ]; then
+  python3 "$INSTALL_DIR/patch-kokoro-en.py" "$VB_DIR/backend/backends/kokoro_backend.py" \
+    || echo -e "${YELLOW}  ⚠ Kokoro 英文修复 patch 失败（不影响安装，英文可能仍逐字母读）${NC}"
+fi
+
+echo -e "${GREEN}OK${NC}"
+
+# ── 启动 Docker ──
+echo "[6/7] 启动 Voicebox 服务（首次需拉取镜像+下载模型，约5-15分钟）..."
+
+# 创建目录
+mkdir -p "$VB_DIR/output"
+
+# 2026-08-12 修复：
+# 1) snap 版 docker 的 compose 插件受 AppArmor 隔离，无法读取 $HOME/.workrelay/ 下的
+#    compose 文件（报 "open ...: permission denied"），但 docker build/docker run 正常；
+#    故 compose 失败时自动回退到 docker build + docker run。
+# 2) 原 `2>&1 | tail -5` 会吞掉 compose 的退出码（set -e 不覆盖管道），脚本误以为成功、
+#    空等 7.5 分钟 API；现在把完整日志写入文件并按真实退出码判断（配合顶部 set -o pipefail）。
+COMPOSE_LOG="$VB_DIR/compose-up.log"
+VB_MODE="compose"   # compose | run（回退模式）
+# 2026-08-13：-p voicebox 固定 compose 项目名——项目目录名变化（voicebox → workrelay-voicebox）
+# 时卷名保持 voicebox_huggingface-cache 不变，可复用旧模型缓存卷
+if docker compose -p voicebox up -d --build >"$COMPOSE_LOG" 2>&1; then
+  echo "  ✅ docker compose 启动成功"
+  # compose 文件固定映射 127.0.0.1:17600:17493，API 检查必须用 17600
+  VB_ACTUAL_PORT=$VB_DOCKER_PORT
+else
+  echo -e "${YELLOW}  ⚠ docker compose 启动失败，回退到 docker build + docker run${NC}"
+  tail -15 "$COMPOSE_LOG"
+  VB_MODE="run"
+  docker rm -f voicebox >/dev/null 2>&1 || true
+  echo "  正在 docker build（首次需拉取基础镜像，约几分钟）..."
+  if ! docker build -t voicebox:local "$VB_DIR" >"$COMPOSE_LOG.build" 2>&1; then
+    echo -e "${RED}失败${NC}"
+    echo "错误：docker build 失败，日志见 $COMPOSE_LOG.build："
+    tail -20 "$COMPOSE_LOG.build"
+    exit 1
+  fi
+  echo "  正在 docker run ..."
+  # 参数与 docker-compose.yml 保持一致（端口映射用 VB_ACTUAL_PORT，与 API 检查对齐）
+  if ! docker run -d --name voicebox --restart unless-stopped \
+      -p "127.0.0.1:${VB_ACTUAL_PORT}:17493" \
+      -v "$VB_DIR/output:/app/data/generations" \
+      -v voicebox-data:/app/data \
+      -v huggingface-cache:/home/voicebox/.cache/huggingface \
+      -e LOG_LEVEL=info \
+      -e NUMBA_CACHE_DIR=/tmp/numba_cache \
+      --cpus 4 --memory 8g \
+      voicebox:local >>"$COMPOSE_LOG" 2>&1; then
+    echo -e "${RED}失败${NC}"
+    echo "错误：docker run 失败，日志见 $COMPOSE_LOG："
+    tail -20 "$COMPOSE_LOG"
+    exit 1
+  fi
+  echo "  ✅ docker run 启动成功（回退模式）"
+fi
+
+# 等待 API 就绪
+echo -n "  等待 Voicebox API 就绪..."
+for i in $(seq 1 90); do
+  if curl -s --max-time 2 "http://${VB_HOST}:${VB_ACTUAL_PORT}/mcp" >/dev/null 2>&1; then
+    echo -e " ${GREEN}OK${NC} (耗时 ${i} 次检查)"
+    break
+  fi
+  sleep 5
+  echo -n "."
+done
+
+if ! curl -s --max-time 2 "http://${VB_HOST}:${VB_ACTUAL_PORT}/mcp" >/dev/null 2>&1; then
+  echo ""
+  echo -e "${RED}Voicebox 启动失败${NC}"
+  if [ "$VB_MODE" = "compose" ]; then
+    echo "  检查日志: docker compose -p voicebox -f $VB_DIR/docker-compose.yml logs voicebox"
+  else
+    echo "  检查日志: docker logs voicebox"
+  fi
+  exit 1
+fi
+
+# ── 2026-08-12：语音模型预下载 + 预设声音（安装后开箱即用）──
+# 背景：容器内直连 huggingface.co 不通（DNS 被污染），hf-mirror 也未缓存相关模型，
+# 因此模型必须在宿主机下载后放入 huggingface 缓存卷，并让容器离线加载（HF_HUB_OFFLINE=1）。
+echo "  ⚙ 准备语音模型与预设声音（首次下载约 1-3 分钟）..."
+
+# 1) output 目录权限：容器内 voicebox 用户需要可写（宿主机目录属主不匹配）
+chmod 777 "$VB_DIR/output" 2>/dev/null || true
+
+# 2) 宿主机预下载 kokoro 模型（82M，含中文声音，~350MB 落盘）到缓存卷
+if python3 -c "import huggingface_hub" >/dev/null 2>&1; then
+  HF_LOC=$(python3 -m pip show huggingface_hub 2>/dev/null | grep Location | awk '{print $2}')
+  # 2026-08-13：compose 模式卷名带项目前缀（voicebox_huggingface-cache），
+  # run 回退模式用裸卷名（huggingface-cache），双候选兜底
+  HF_VOL=$(docker volume inspect voicebox_huggingface-cache -f '{{.Mountpoint}}' 2>/dev/null)
+  [ -z "$HF_VOL" ] && HF_VOL=$(docker volume inspect huggingface-cache -f '{{.Mountpoint}}' 2>/dev/null)
+  if [ -n "$HF_VOL" ]; then
+    echo -n "  下载语音模型 (Kokoro-82M, ~350MB)... "
+    if sudo -n env PYTHONPATH="$HF_LOC" HF_HUB_DISABLE_PROGRESS_BARS=1 python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download('hexgrad/Kokoro-82M', cache_dir='$HF_VOL')
+print('done')
+" >/tmp/wr-model-dl.log 2>&1; then
+      echo -e "${GREEN}OK${NC}"
+    else
+      echo -e "${YELLOW}失败${NC}（详见 /tmp/wr-model-dl.log，可稍后手动下载）"
+    fi
+  else
+    echo "  ⚠ 未找到 huggingface 缓存卷，跳过模型预下载（合成时可能联网超时）"
+  fi
+else
+  echo "  ⚠ 宿主机无 huggingface_hub，跳过模型预下载（可用 pip3 install huggingface_hub 后重跑）"
+fi
+
+# 3) 容器离线加载配置
+#    compose 模式：生成 override 文件（HF_HUB_CACHE 指向挂载的缓存卷 + 离线模式），重建容器生效
+#    run 模式：直接重建容器并注入环境变量
+if [ "$VB_MODE" = "compose" ]; then
+  cat > "$VB_DIR/docker-compose.override.yml" <<'WR_EOF'
+services:
+  voicebox:
+    environment:
+      - HF_HUB_CACHE=/home/voicebox/.cache/huggingface
+      - HF_HUB_OFFLINE=1
+WR_EOF
+  docker compose -p voicebox up -d >/dev/null 2>&1 || true
+else
+  docker rm -f voicebox >/dev/null 2>&1 || true
+  docker run -d --name voicebox --restart unless-stopped \
+      -p "127.0.0.1:${VB_ACTUAL_PORT}:17493" \
+      -v "$VB_DIR/output:/app/data/generations" \
+      -v voicebox-data:/app/data \
+      -v huggingface-cache:/home/voicebox/.cache/huggingface \
+      -e LOG_LEVEL=info \
+      -e NUMBA_CACHE_DIR=/tmp/numba_cache \
+      -e HF_HUB_CACHE=/home/voicebox/.cache/huggingface \
+      -e HF_HUB_OFFLINE=1 \
+      --cpus 4 --memory 8g \
+      voicebox:local >/dev/null 2>&1 || true
+fi
+
+# 重建后等 API 重新就绪（容器重启）
+for i in $(seq 1 30); do
+  curl -s --max-time 2 "http://${VB_HOST}:${VB_ACTUAL_PORT}/mcp" >/dev/null 2>&1 && break
+  sleep 3
+  echo -n "."
+done
+
+# 4) 创建预设声音 profile（kokoro 中文女声 zf_xiaoxiao），id 写入 profile_id 供 workrelay-tts.sh 自动读取
+mkdir -p "$HOME/.workrelay/speak"
+PROFILE_FILE="$HOME/.workrelay/speak/profile_id"
+# 先查已存在的同款 preset profile，避免重名 400
+EXIST_ID=$(curl --noproxy '*' -s --max-time 5 "http://${VB_HOST}:${VB_ACTUAL_PORT}/profiles" 2>/dev/null \
+  | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    for p in d:
+        if p.get("preset_engine")=="kokoro" and p.get("preset_voice_id")=="zf_xiaoxiao":
+            print(p.get("id","")); break
+except Exception:
+    print("")
+' 2>/dev/null)
+if [ -z "$EXIST_ID" ]; then
+  EXIST_ID=$(curl --noproxy '*' -s --max-time 10 -X POST "http://${VB_HOST}:${VB_ACTUAL_PORT}/profiles" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"WorkRelay 默认声音","description":"WorkRelay TTS 预设中文女声","language":"zh","voice_type":"preset","preset_engine":"kokoro","preset_voice_id":"zf_xiaoxiao"}' \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null)
+fi
+if [ -n "$EXIST_ID" ]; then
+  echo "$EXIST_ID" > "$PROFILE_FILE"
+  echo "  ✅ 预设声音已就绪"
+else
+  echo "  ⚠ 预设声音创建失败，可手动设 WR_VOICEBOX_PROFILE_ID 指定声音"
+fi
+
+# ── 部署脚本 & 配置 OpenClaw ──
+echo -n "[7/7] 部署 TTS 桥接脚本 & 配置 OpenClaw... "
+
+mkdir -p "$HOME/.workrelay/speak"
+cp "$INSTALL_DIR/workrelay-tts.sh" "$HOME/.workrelay/speak/"
+chmod +x "$HOME/.workrelay/speak/workrelay-tts.sh"
+
+# 2026-08-12：随安装部署说明文档（README + 声音克隆说明书 + 千问引擎说明书），用户安装后即可查看
+cp "$INSTALL_DIR/README.md" "$HOME/.workrelay/speak/" 2>/dev/null || true
+cp "$INSTALL_DIR/CLONE_GUIDE.md" "$HOME/.workrelay/speak/" 2>/dev/null || true
+cp "$INSTALL_DIR/QWEN_GUIDE.md" "$HOME/.workrelay/speak/" 2>/dev/null || true
+
+# 写入 OpenClaw TTS 配置
+if command -v openclaw &>/dev/null; then
+  TTS_SCRIPT="$HOME/.workrelay/speak/workrelay-tts.sh"
+  openclaw config set messages.tts.auto off 2>/dev/null || true
+  openclaw config set messages.tts.provider tts-local-cli 2>/dev/null || true
+  openclaw config set messages.tts.providers.tts-local-cli.command "$TTS_SCRIPT" 2>/dev/null || true
+  openclaw config set messages.tts.providers.tts-local-cli.args '["{{Text}}","{{OutputPath}}"]' 2>/dev/null || true
+  openclaw config set messages.tts.providers.tts-local-cli.outputFormat wav 2>/dev/null || true
+  openclaw config set messages.tts.providers.tts-local-cli.timeoutMs 180000 2>/dev/null || true
+
+  # MCP 配置
+  openclaw config set mcp.servers.voicebox.url "http://${VB_HOST}:${VB_ACTUAL_PORT}/mcp" 2>/dev/null || true
+  openclaw config set mcp.servers.voicebox.transport streamable-http 2>/dev/null || true
+  openclaw config set mcp.servers.voicebox.timeout 60 2>/dev/null || true
+
+  openclaw gateway restart 2>/dev/null || true
+else
+  echo -e "${YELLOW}⚠ 未检测到 openclaw CLI，跳过自动配置${NC}"
+fi
+
+echo -e "${GREEN}OK${NC}"
+echo ""
+
+# ── 验证 ──
+echo "============================================"
+echo "  安装验证"
+echo "============================================"
+
+echo -n "  Docker 容器: "
+docker ps --format '{{.Names}}' 2>/dev/null | grep -q voicebox && echo -e "${GREEN}运行中${NC}" || echo -e "${RED}未运行${NC}"
+
+echo -n "  API 连通性: "
+curl -s --max-time 2 "http://${VB_HOST}:${VB_ACTUAL_PORT}/mcp" >/dev/null 2>&1 \
+  && echo -e "${GREEN}OK${NC} (http://${VB_HOST}:${VB_ACTUAL_PORT})" \
+  || echo -e "${RED}无法连接${NC}"
+
+echo -n "  TTS 桥接脚本: "
+[ -f "$HOME/.workrelay/speak/workrelay-tts.sh" ] && echo -e "${GREEN}已部署${NC}" || echo -e "${RED}缺失${NC}"
+
+echo ""
+echo -e "${GREEN}✅ Voicebox TTS 安装完成！${NC}"
+echo "  API 地址:  http://${VB_HOST}:${VB_ACTUAL_PORT}"
+if [ "$VB_MODE" = "compose" ]; then
+  echo "  管理命令:  cd $VB_DIR && docker compose -p voicebox ps"
+  echo "  查看日志:  cd $VB_DIR && docker compose -p voicebox logs -f voicebox"
+else
+  echo "  管理命令:  docker ps | grep voicebox"
+  echo "  查看日志:  docker logs -f voicebox"
+fi
+echo ""
+echo "  🎤 预设声音：开箱即用（Voicebox 内置 50+ 音色）"
+echo "  🎙️ 声音克隆：可选，设 WR_VOICEBOX_PROFILE_ID=你的profile_id"
+echo ""
