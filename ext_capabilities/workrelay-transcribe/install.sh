@@ -122,15 +122,35 @@ snapshot_download('Systran/faster-whisper-small',
 print('  模型下载完成')
 " 2>&1
 }
-if dl_model; then
-  :
-elif HF_ENDPOINT=https://hf-mirror.com dl_model; then
-  echo "  ℹ 直连 HuggingFace 失败，已通过国内镜像 hf-mirror.com 下载成功"
-else
+# 2026-09-14 优化（石头哥）：按区域决定下载顺序
+#   国内（WR_IMAGE_REGION=cn，客户端中文界面传入）→ 镜像优先，省掉直连超时等待
+#   国际/未指定 → 直连优先；两种顺序都保留"失败自动回退另一种"+ 手动指引
+HF_MIRROR_URL="${WR_HF_ENDPOINT:-https://hf-mirror.com}"
+dl_fail_msg() {
   echo -e "${RED}模型下载失败${NC}"
   echo "提示：检查网络连接，或手动设置 WR_WHISPER_CACHE 到已有模型目录"
-  echo "  也可手动下载：HF_ENDPOINT=https://hf-mirror.com python3 -c \"from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-small', cache_dir='$MODEL_CACHE')\""
-  exit 1
+  echo "  也可手动下载：HF_ENDPOINT=${HF_MIRROR_URL} python3 -c \"from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-small', cache_dir='$MODEL_CACHE')\""
+}
+if [ "${WR_IMAGE_REGION:-auto}" = "cn" ] && [ -z "${WR_HF_ENDPOINT:-}" ]; then
+  # 国内：镜像优先（避免先直连超时白等）
+  if HF_ENDPOINT="$HF_MIRROR_URL" dl_model; then
+    echo "  ✅ 已通过国内镜像 hf-mirror.com 下载（国内优先，跳过直连等待）"
+  elif dl_model; then
+    echo "  ℹ 国内镜像不可用，已直连 HuggingFace 下载成功"
+  else
+    dl_fail_msg
+    exit 1
+  fi
+else
+  # 国际/自动：直连优先，失败回退镜像
+  if dl_model; then
+    :
+  elif HF_ENDPOINT="$HF_MIRROR_URL" dl_model; then
+    echo "  ℹ 直连 HuggingFace 失败，已通过国内镜像 hf-mirror.com 下载成功"
+  else
+    dl_fail_msg
+    exit 1
+  fi
 fi
 echo -e "  ${GREEN}OK${NC}"
 
