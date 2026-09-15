@@ -142,7 +142,8 @@ echo -e "${GREEN}OK${NC} (可用 ${AVAIL}MB)"
 
 # ── 内存检查 ──
 echo -n "[3/8] 检查内存... "
-RAM=$(free -m | awk '/^Mem:/{print $2}')
+# 2026-09-15 修复：中文 locale 下 free -m 输出“内存：”，awk 匹配 Mem: 失败会误报内存不足 → 强制 LANG=C
+RAM=$(LANG=C free -m | awk '/^Mem:/{print $2}')
 if [ "$RAM" -lt 6000 ]; then
   echo -e "${RED}不足 (${RAM}MB)${NC}"
   echo "错误：至少需要 6GB 内存，当前仅 ${RAM}MB"
@@ -210,13 +211,15 @@ fi
 # ── 启动容器 ──
 echo "[8/8] 启动 Voicebox (千问) 容器..."
 
-mkdir -p "$VB_DIR/output"
-chmod 777 "$VB_DIR/output" 2>/dev/null || true
+# 2026-09-15 修复（生产环境反馈）：持久化整个 /app/data
+# 含 voicebox.db（音色库）+ profiles + generations，避免容器重建后音色/数据丢失
+mkdir -p "$VB_DIR/data/generations" "$VB_DIR/data/profiles" "$VB_DIR/data/cache"
+chmod -R 777 "$VB_DIR/data" 2>/dev/null || true
 
 docker rm -f voicebox-qwen >/dev/null 2>&1 || true
 if ! docker run -d --name voicebox-qwen --restart unless-stopped \
     -p "127.0.0.1:${VB_PORT}:${VB_CONTAINER_PORT}" \
-    -v "$VB_DIR/output:/app/data/generations" \
+    -v "$VB_DIR/data:/app/data" \
     -v "$HF_CACHE:/home/voicebox/.cache/huggingface" \
     -e LOG_LEVEL=info \
     -e NUMBA_CACHE_DIR=/tmp/numba_cache \
@@ -230,7 +233,7 @@ if ! docker run -d --name voicebox-qwen --restart unless-stopped \
 fi
 echo "  ✅ docker run 启动成功"
 
-docker exec voicebox-qwen chmod 777 /app/data/generations 2>/dev/null || true
+docker exec voicebox-qwen chmod -R 777 /app/data 2>/dev/null || true
 
 # 等待 API 就绪
 echo -n "  等待 Voicebox API 就绪..."

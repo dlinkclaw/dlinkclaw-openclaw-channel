@@ -28,7 +28,7 @@
       "id": "memory",
       "label": "内存 ≥ 6GB",
       "expect": "≥ 6GB 可用",
-      "check": "[ $(free -m | awk '/^Mem:/{print $2}') -ge 6144 ]",
+      "check": "[ $(LANG=C free -m | awk '/^Mem:/{print $2}') -ge 6144 ]",
       "hint": "当前内存不足，TTS 至少需要 6GB 内存"
     },
     {

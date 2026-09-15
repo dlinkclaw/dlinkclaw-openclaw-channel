@@ -146,7 +146,8 @@ echo -e "${GREEN}OK${NC} (可用 ${AVAIL}MB)"
 
 # ── 内存检查 ──
 echo -n "[3/6] 检查内存... "
-RAM=$(free -m | awk '/^Mem:/{print $2}')
+# 2026-09-15 修复：中文 locale 下 free -m 输出“内存：”，awk 匹配 Mem: 失败会误报内存不足 → 强制 LANG=C
+RAM=$(LANG=C free -m | awk '/^Mem:/{print $2}')
 if [ "$RAM" -lt 6000 ]; then
   echo -e "${RED}不足 (${RAM}MB)${NC}"
   echo "错误：至少需要 6GB 内存，当前仅 ${RAM}MB"
@@ -183,17 +184,20 @@ fi
 echo "[6/6] 启动 Voicebox 容器..."
 
 # 创建输出目录（容器内 voicebox 用户需要可写）
-mkdir -p "$VB_DIR/output"
-chmod 777 "$VB_DIR/output" 2>/dev/null || true
+# 2026-09-15 修复（生产环境反馈）：持久化整个 /app/data
+# 含 voicebox.db（音色库）+ profiles + generations，避免容器重建后音色/数据丢失
+mkdir -p "$VB_DIR/data/generations" "$VB_DIR/data/profiles" "$VB_DIR/data/cache"
+chmod -R 777 "$VB_DIR/data" 2>/dev/null || true
 
 # 2026-08-14：镜像已内置 Kokoro 模型（/home/voicebox/.cache/huggingface）且 ENV 已含
 # HF_HUB_OFFLINE=1 / HF_HUB_CACHE，直接 docker run 即可。
-# ⚠ 注意：不能挂空卷到 /home/voicebox/.cache/huggingface 或 /app/data，
+# ⚠ 注意：不能挂【空卷】到 /home/voicebox/.cache/huggingface（会遮蔽内置模型）；
+#   /app/data 现已挂载宿主机预建目录（含 generations/profiles/cache），用于持久化 voicebox.db 音色库。
 #   否则会遮蔽镜像内已内置的模型/数据（旧版 clone+build 方案才需要挂卷）。
 docker rm -f voicebox >/dev/null 2>&1 || true
 if ! docker run -d --name voicebox --restart unless-stopped \
     -p "127.0.0.1:${VB_ACTUAL_PORT}:17493" \
-    -v "$VB_DIR/output:/app/data/generations" \
+    -v "$VB_DIR/data:/app/data" \
     -e LOG_LEVEL=info \
     -e NUMBA_CACHE_DIR=/tmp/numba_cache \
     --cpus 4 --memory 8g \

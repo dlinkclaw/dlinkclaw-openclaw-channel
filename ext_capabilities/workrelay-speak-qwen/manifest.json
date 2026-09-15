@@ -28,7 +28,7 @@
       "id": "memory",
       "label": "内存 ≥ 6GB（建议 8GB+）",
       "expect": "≥ 6GB 可用",
-      "check": "[ $(free -m | awk '/^Mem:/{print $2}') -ge 6144 ]",
+      "check": "[ $(LANG=C free -m | awk '/^Mem:/{print $2}') -ge 6144 ]",
       "hint": "当前内存不足，Qwen3-TTS 1.7B 至少需要 6GB 内存，建议 8GB 以上"
     },
     {

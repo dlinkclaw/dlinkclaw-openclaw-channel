@@ -139,7 +139,8 @@ echo -e "${GREEN}OK${NC} (可用 ${AVAIL}MB)"
 
 # ── 内存检查 ──
 echo -n "[3/6] 检查内存... "
-RAM=$(free -m | awk '/^Mem:/{print $2}')
+# 2026-09-15 修复：中文 locale 下 free -m 输出“内存：”，awk 匹配 Mem: 失败会误报内存不足 → 强制 LANG=C
+RAM=$(LANG=C free -m | awk '/^Mem:/{print $2}')
 if [ "$RAM" -lt 6000 ]; then
   echo -e "${RED}不足 (${RAM}MB)${NC}"
   echo "错误：至少需要 6GB 内存，当前仅 ${RAM}MB"
@@ -171,13 +172,15 @@ fi
 # ── 启动容器 ──
 echo "[6/6] 启动 Voicebox (LuxTTS) 容器..."
 
-mkdir -p "$VB_DIR/output"
-chmod 777 "$VB_DIR/output" 2>/dev/null || true
+# 2026-09-15 修复（生产环境反馈）：持久化整个 /app/data
+# 含 voicebox.db（音色库）+ profiles + generations，避免容器重建后音色/数据丢失
+mkdir -p "$VB_DIR/data/generations" "$VB_DIR/data/profiles" "$VB_DIR/data/cache"
+chmod -R 777 "$VB_DIR/data" 2>/dev/null || true
 
 docker rm -f voicebox-luxtts >/dev/null 2>&1 || true
 if ! docker run -d --name voicebox-luxtts --restart unless-stopped \
     -p "127.0.0.1:${VB_PORT}:${VB_CONTAINER_PORT}" \
-    -v "$VB_DIR/output:/app/data/generations" \
+    -v "$VB_DIR/data:/app/data" \
     -e LOG_LEVEL=info \
     -e NUMBA_CACHE_DIR=/tmp/numba_cache \
     --cpus 4 --memory 8g \
@@ -191,7 +194,7 @@ echo "  ✅ docker run 启动成功"
 # 2026-08-15 权限兜底：snap docker 的 bind mount 目录在容器内可能显示 root:root 755，
 # voicebox 用户（uid 999）无法写入 /app/data/generations 导致生成保存失败。
 # 容器内 chmod 777 兜底（docker run 后立即执行，幂等）。
-docker exec voicebox-luxtts chmod 777 /app/data/generations 2>/dev/null || true
+docker exec voicebox-luxtts chmod -R 777 /app/data 2>/dev/null || true
 
 # 等待 API 就绪
 echo -n "  等待 Voicebox API 就绪..."
