@@ -181,6 +181,15 @@ export class DLClient extends EventEmitter {
 
     private async receiveEventHandle(topic: string, msg: DLMessagePayload | CmdMessage) {
         if (topic.endsWith('/cmd')) {
+            // 2026-09-15 方案A（石头哥确认）：服务端在新增/移除授权成员后，会往 bot 的 cmd topic
+            // 发一个轻量信号 {"type":"event","event":"openUserChanged"}。
+            // 插件收到后重新拉取 mqtt 配置并重连，让 openUserTopics 立刻是最新的
+            // （否则新用户收不到 onTick / onHealth / onSessionsChanged 等事件推送）。
+            // 只重连插件自身的 MQTT，不重启 openclaw 网关。
+            if ((msg as { event?: string } | null)?.event === 'openUserChanged') {
+                void this.refreshConfigAndReconnect();
+                return;
+            }
             const cmdMessage = msg as CmdMessage;
             let result: CmdResponse = {
                 requestId: cmdMessage.requestId,
@@ -273,6 +282,38 @@ export class DLClient extends EventEmitter {
             });
         }
         await this.changeConnectStatus('stop');
+    }
+
+    /**
+     * 2026-09-15 方案A（石头哥确认）：重新拉取 mqtt 配置（含 openUserTopics）并重连。
+     * 触发时机：服务端新增/移除授权成员后，会往 bot 的 cmd topic 发 openUserChanged 信号。
+     * 说明：connect() 只在 mqttConfig 为 null 时才 fetchConfig()，所以必须先断开并置空配置；
+     * 只重连插件自身的 MQTT，不重启 openclaw 网关。
+     */
+    async refreshConfigAndReconnect(): Promise<void> {
+        try {
+            this.logger.info(`${this.accountLog} 收到授权成员变更信号，重新拉取 mqtt 配置并重连...`);
+            // 1) 断开旧连接（end 的回调里会清理 mqttClient / cmdHandler / mqttConfig）
+            await new Promise<void>((resolve) => {
+                if (!this.mqttClient) {
+                    resolve();
+                    return;
+                }
+                this.mqttClient.end(false, () => resolve());
+            });
+            this.mqttClient = null;
+            // 关键：置空后 start() → connect() 才会重新 fetchConfig()
+            this.mqttConfig = null;
+            if (this.cmdHandler) {
+                this.cmdHandler.cleanup();
+                this.cmdHandler = null;
+            }
+            // 2) 重新拉配置 + 连接 + 订阅
+            await this.start();
+            this.logger.info(`${this.accountLog} mqtt 配置已刷新，重连完成`);
+        } catch (e) {
+            this.logger.error(`${this.accountLog} 刷新 mqtt 配置失败: ${String(e)}`);
+        }
     }
 
     async exeCmd(cmdMessage: CmdMessage) {
