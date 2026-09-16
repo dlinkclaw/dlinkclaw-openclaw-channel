@@ -62,16 +62,29 @@ export class DLClient extends EventEmitter {
         this.accountLog = `account[${ctx.account.accountId}] [DL-Client.ts]`;
         const { baseUrl, apiKey, secret } = ctx.account.config;
         this.http = new DLHttp({ baseUrl, apiKey, secret }, logger);
-        const cfg = ctx.cfg;
+        this.initCmdHandler();
+    }
+
+    /**
+     * 2026-09-16 修复（石头哥报：加同事后 model.list / session.list 全空）：
+     * cmdHandler 原来只在构造函数里创建一次，任何把它置空的路径（stop / 刷新配置）
+     * 都会导致「此后永远为 null」→ 所有 cmd 请求失败且不可自愈（只能重启 openclaw 网关）。
+     * 抽成幂等方法后，start() 会兜底重建。
+     */
+    private initCmdHandler(): void {
+        if (this.cmdHandler) {
+            return;
+        }
+        const cfg = this.ctx.cfg;
         if (cfg.gateway?.auth?.token) {
             const token = cfg.gateway.auth.token.toString();
             const gatewayUrl = 'ws://127.0.0.1:18789';
             this.cmdHandler = createCmdHandler({
                 cfg,
-                channelId: ctx.channelId,
+                channelId: this.ctx.channelId,
                 gatewayUrl,
                 token,
-                baseUrl: ctx.account.config.baseUrl
+                baseUrl: this.ctx.account.config.baseUrl
             }, this, this.logger)
         }
     }
@@ -260,6 +273,11 @@ export class DLClient extends EventEmitter {
     }
 
     async start() {
+        // 2026-09-16 修复：cmdHandler 缺失就补建（幂等），保证 start() 可重入、不再出现
+        // “start 之后 RPC 永久失效”的情况。
+        if (!this.cmdHandler) {
+            this.initCmdHandler();
+        }
         if (!this.isConnected()) {
             await this.connect();
         }
@@ -271,48 +289,41 @@ export class DLClient extends EventEmitter {
 
     async stop() {
         if (this.mqttClient) {
-            this.mqttClient.end(false, () => {
-                this.mqttClient = null;
-                this.logger.warn(`DLClient account[${this.ctx.account.accountId}] Disconnected`);
-                if (this.cmdHandler) {
-                    this.cmdHandler.cleanup();
-                }
-                this.cmdHandler = null;
-                this.mqttConfig = null;
+            // 2026-09-16 修复：原实现不等 end 回调（清理动作都在回调里），与紧随其后的 start()
+            // 形成竞态：isConnected() 仍为 true → 跳过 connect()，随后回调才把 mqttClient /
+            // cmdHandler / mqttConfig 清空 → 连接彻底废掉。这里等回调执行完再返回。
+            await new Promise<void>((resolve) => {
+                this.mqttClient!.end(false, () => {
+                    this.mqttClient = null;
+                    this.logger.warn(`DLClient account[${this.ctx.account.accountId}] Disconnected`);
+                    if (this.cmdHandler) {
+                        this.cmdHandler.cleanup();
+                    }
+                    this.cmdHandler = null;
+                    this.mqttConfig = null;
+                    resolve();
+                });
             });
         }
         await this.changeConnectStatus('stop');
     }
 
     /**
-     * 2026-09-15 方案A（石头哥确认）：重新拉取 mqtt 配置（含 openUserTopics）并重连。
+     * 2026-09-15 方案A（石头哥确认）：重新拉取 mqtt 配置（含 openUserTopics）。
      * 触发时机：服务端新增/移除授权成员后，会往 bot 的 cmd topic 发 openUserChanged 信号。
-     * 说明：connect() 只在 mqttConfig 为 null 时才 fetchConfig()，所以必须先断开并置空配置；
-     * 只重连插件自身的 MQTT，不重启 openclaw 网关。
+     *
+     * 2026-09-16 修复（石头哥报：加同事后 model.list / session.list 全部为空）：
+     * 原实现是「断连 + 置空 cmdHandler + 重连」，有致命副作用——cmdHandler 只在构造函数
+     * 里创建一次，置空后 start() 不会重建 → 所有 cmd RPC 永久失效，只能重启 openclaw 网关恢复。
+     * 而本方法的目的只是刷新 openUserTopics——它是 publishEventToDLClient（L348）实时读取的，
+     * 与 MQTT 订阅目标（clientTopics）、Gateway WS 通道都无关 → 只刷新配置即可，不断连、不重连。
      */
     async refreshConfigAndReconnect(): Promise<void> {
         try {
-            this.logger.info(`${this.accountLog} 收到授权成员变更信号，重新拉取 mqtt 配置并重连...`);
-            // 1) 断开旧连接（end 的回调里会清理 mqttClient / cmdHandler / mqttConfig）
-            await new Promise<void>((resolve) => {
-                if (!this.mqttClient) {
-                    resolve();
-                    return;
-                }
-                this.mqttClient.end(false, () => resolve());
-            });
-            this.mqttClient = null;
-            // 关键：置空后 start() → connect() 才会重新 fetchConfig()
-            this.mqttConfig = null;
-            if (this.cmdHandler) {
-                this.cmdHandler.cleanup();
-                this.cmdHandler = null;
-            }
-            // 2) 重新拉配置 + 连接 + 订阅
-            await this.start();
-            this.logger.info(`${this.accountLog} mqtt 配置已刷新，重连完成`);
+            await this.fetchConfig();
+            this.logger.info(`${this.accountLog} mqtt 配置已刷新（openUserTopics 已更新，未重连）`);
         } catch (e) {
-            this.logger.error(`${this.accountLog} 刷新 mqtt 配置失败: ${String(e)}`);
+            this.logger.error(`${this.accountLog} 刷新 mqtt 配置失败（保持旧配置）: ${String(e)}`);
         }
     }
 
