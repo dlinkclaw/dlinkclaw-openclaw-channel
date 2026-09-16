@@ -551,7 +551,7 @@ export class DLClient extends EventEmitter {
         let result_content = message.payload;
         if (kind !== 'patch' && kind !== 'plan' && kind !== 'block') {
             if (result_content.length > 200) {
-                result_content = result_content.substring(0, 300)
+                result_content = result_content.substring(0, 200)
             }
         }
         const toAgent = message.toAgent;
