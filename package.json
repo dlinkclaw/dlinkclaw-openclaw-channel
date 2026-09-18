@@ -1,6 +1,6 @@
 {
   "name": "dlinkclaw-openclaw",
-  "version": "2026.9.06-alpha.07",
+  "version": "1.0.1",
   "description": "DLinkClaw OpenClaw channel plugin — 朵联 OpenClaw 接入通道",
   "keywords": [
     "DLinkClaw",
@@ -86,10 +86,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/dlinkclaw/openclaw-channel-plugin.git"
+    "url": "https://github.com/dlinkclaw/dlinkclaw-openclaw-channel.git"
   },
-  "homepage": "https://github.com/dlinkclaw/openclaw-channel-plugin#readme",
+  "homepage": "https://github.com/dlinkclaw/dlinkclaw-openclaw-channel#readme",
   "bugs": {
-    "url": "https://github.com/dlinkclaw/openclaw-channel-plugin/issues"
+    "url": "https://github.com/dlinkclaw/dlinkclaw-openclaw-channel/issues"
   }
 }

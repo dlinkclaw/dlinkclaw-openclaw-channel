@@ -35,18 +35,20 @@ export class CmdHandler {
    */
   async initialize(): Promise<boolean> {
     try {
-      this.services.on('onTick', (payload) => {
-        this.dlClient.publishEventToDLClient(payload, 'onTick', '0');
+      this.services.on('onTick', (_payload) => {
+        //this.dlClient.publishEventToDLClient(payload, 'onTick', '0');
         //this.dlClient.publishEventToServer({ "connected": true }, "onConnectState")
       })
+
+      this.services.on('onHealth', (_payload) => {
+        //this.dlClient.publishEventToDLClient(payload, 'onHealth', '0')
+      })
+
 
       this.services.on('onHeartbeat', (_payload) => {
         this.dlClient.publishEventToServer({ "connected": true }, "onConnectState")
       })
 
-      this.services.on('onHealth', (payload) => {
-        this.dlClient.publishEventToDLClient(payload, 'onHealth', '0')
-      })
 
       this.services.on('onHandshaked', (payload) => {
         this.dlClient.publishEventToServer(payload, 'onHandshaked', '0')
