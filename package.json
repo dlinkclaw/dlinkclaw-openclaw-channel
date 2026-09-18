@@ -76,7 +76,7 @@
       ],
       "order": 90,
       "quickstartAllowFrom": true,
-      "isDebug": false,
+      "isDebug": true,
       "preferSessionLookupForAnnounceTarget": true
     },
     "install": {
