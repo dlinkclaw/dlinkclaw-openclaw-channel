@@ -478,19 +478,28 @@ export class ClawServices extends EventEmitter {
 
   private async handleAgentCreate(params: Record<string, string>): Promise<{ id: string; name: string }> {
     const workspace_path = getOpenclawPath('workspace', params.id.toLowerCase().replace(/\s+/g, '-'))
+    const provider = params.provider ?? ''
+    // 2026-09-18：新版 agents.create 直接支持 model，这里一步写入（不再依赖 update 补写）
     const createParams: AgentCreateParams = {
       name: params.id,
       workspace: workspace_path,
       emoji: params.emoji,
-      avatar: (params.avatar && params.avatar.length > 0) ? this.options.baseUrl + params.avatar : undefined
+      avatar: (params.avatar && params.avatar.length > 0) ? this.options.baseUrl + params.avatar : undefined,
+      model: provider.length > 0 ? `${provider}/${params.model}` : params.model,
     }
     const result = await this.client!.createAgent(createParams);
-    const provider = params.provider ?? ''
+    // 2026-09-18 修复（石头哥报：首次点击创建失败，且 name 未写入 openclaw.json）：
+    // agents.create 后网关是「异步热加载配置」的（日志：create 186ms 成功，紧跟的
+    // agents.update 报 agent "xiaoha" not found，1 秒后 config hot reload applied）。
+    // 若不等待就绪，紧随的 updateAgent 必然失败 → 显示名（中文“小花”）没写进去，只剩 id。
+    // 这里轮询 listAgents 等待新 agent 进入配置（默认 16 次 × 500ms = 最多 8 秒）。
+    await this.waitAgentReady(result.agentId);
+    // 2026-09-18：model 已在 create 时写入，update 只负责写显示名（中文 name，create 的 name
+    // 必须能生成合法 agentId 只能传 id，显示名靠 update 的 sanitizeAgentIdentityLine 支持中文）。
     const udpateParams: AgentUpdateParams = {
       agentId: result.agentId,
       name: params.name,
       workspace: workspace_path,
-      model: provider.length > 0 ? `${provider}/${params.model}` : params.model,
     }
     await this.client?.updateAgent(udpateParams);
     const sessionKey = `agent:${params.agentId}:${this.options.channelId}:direct:${params.userId.toLowerCase()}`;
@@ -504,6 +513,27 @@ export class ClawServices extends EventEmitter {
       id: result.agentId,
       name: params.name
     };
+  }
+
+  /**
+   * 2026-09-18 新增：等待 agents.create 后新 agent 被网关热加载就绪。
+   * 判断依据：listAgents 能查到该 agentId 即视为就绪（与 handleAgentGet 同源）。
+   * 超时只 warn 不抛错，让后续 update 继续尝试（避免死等拖垮创建流程）。
+   */
+  private async waitAgentReady(agentId: string, maxAttempts = 16, intervalMs = 500): Promise<void> {
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        const list = await this.client!.listAgents();
+        if (list?.agents?.some((a) => a.id === agentId)) {
+          this.log(`agent ${agentId} 已就绪（等待 ${(i + 1) * intervalMs}ms）`, 'info');
+          return;
+        }
+      } catch {
+        // 忽略瞬时错误，继续轮询
+      }
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    this.log(`⚠ agent ${agentId} 等待就绪超时（${maxAttempts * intervalMs}ms），继续尝试 update`, 'warn');
   }
 
   private async handleAgentUpdate(params: Record<string, string>): Promise<{ id: string }> {

@@ -93,6 +93,8 @@ export interface AgentCreateParams {
   workspace?: string;
   emoji?: string;
   avatar?: string;
+  // 2026-09-18：新版 agents.create 直接支持 model（旧版不支持，需 create 后 update 补写）
+  model?: string;
 }
 
 export interface AgentCreateResponse {
