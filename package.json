@@ -35,7 +35,8 @@
     "skills",
     "ext_capabilities",
     "openclaw.plugin.json",
-    "README.md"
+    "README.md",
+    "docs"
   ],
   "dependencies": {
     "axios": "^1.15.2",
@@ -75,7 +76,7 @@
       ],
       "order": 90,
       "quickstartAllowFrom": true,
-      "isDebug": true,
+      "isDebug": false,
       "preferSessionLookupForAnnounceTarget": true
     },
     "install": {
