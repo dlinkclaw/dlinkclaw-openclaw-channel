@@ -8,7 +8,8 @@ DLinkClaw 朵联统一 AI 工作台是一款企业级即时通讯 + 多智能体
 
 ## 界面一览
 
-![DLinkClaw 朵联统一 AI 工作台](./docs/screenshot.jpg)
+![DLinkClaw 朵联统一 AI 工作台](https://dlinkclaw.com/dlinkclaw-app.png)
+
 
 > 截图：DLinkClaw 客户端 —— 左侧机器人/群组会话列表、中间多智能体对话区、右侧工作区/自动化面板。
 
