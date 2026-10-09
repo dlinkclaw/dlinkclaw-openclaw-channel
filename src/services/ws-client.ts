@@ -332,6 +332,13 @@ export class WSClient extends EventEmitter {
     if (params.limit) {
       p.limit = params.limit
     }
+    // ⚠️ 2026-10-09 修复（石头哥确认：客户端非活跃会话/旧会话显示不出来）：
+    // 原来 offset 没透传——客户端请求第二页(offset=20)时被丢弃，网关永远返回第一页。
+    // openclaw 侧活跃会话多时，第一页 20 条被活跃会话占满，排在后面的非活跃旧会话
+    // 客户端永远拿不到 → 客户端会话列表看不到历史会话。补上 offset 让客户端翻页真正生效。
+    if (params.offset !== undefined) {
+      p.offset = params.offset
+    }
     return this.sendRequest({
       type: 'req',
       method: 'sessions.list',
