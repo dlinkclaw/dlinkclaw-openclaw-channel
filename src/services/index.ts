@@ -10,6 +10,9 @@ import ClawServices from "./services.js";
 import { PluginLogger } from "openclaw/plugin-sdk/core";
 
 const AGENT_RELAY_MAP: Map<string, string> = new Map();
+// 2026-10-13 去重缓存（石头哥需求：更精准控制 + 减少不必要的 MQTT 推送）：
+// key=streamId，value=上次推送内容。同一 streamId 内容未变化时不重复推送。
+const LAST_PUSHED_CONTENT: Map<string, string> = new Map();
 //const BATCH_COUNT = 10;
 //const BATCH_TRAJECTORY_MAP: Map<string, Array<any>> = new Map();
 
@@ -150,6 +153,17 @@ export class CmdHandler {
             }
             if (label.includes('_')) {
               const streamId = label.split('_')[1]
+              // ⚠️ 2026-10-13 精准化（石头哥需求：更精准控制 + 减少不必要的 MQTT 推送）：
+              // 1) 【不在插件侧】按"内容是否含 plan 复选框"拦截 —— kind:'plan' 就是客户端"中间文本气泡"的既定契约，
+              //    拦截会连中间回复一起干掉（10-13 实测教训）。任务清单的识别放在【客户端】（严格复选框解析 + 空解析忽略）。
+              // 2) 这里只做【去重】：同一 streamId 内容与上次相同则不再推送，去掉无意义的重复 MQTT。
+              if (LAST_PUSHED_CONTENT.get(streamId) === content) {
+                return;
+              }
+              if (LAST_PUSHED_CONTENT.size > 200) {
+                LAST_PUSHED_CONTENT.clear(); // 简单上限保护，避免 Map 无限增长
+              }
+              LAST_PUSHED_CONTENT.set(streamId, content);
               this.dlClient.publishProcessingState({
                 streamId,
                 content,
