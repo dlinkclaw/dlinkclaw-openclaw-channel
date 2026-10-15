@@ -55,7 +55,7 @@
     "typescript": "^5.3.3"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.9.1"
+    "openclaw": ">=2026.10.3"
   },
   "openclaw": {
     "extensions": [

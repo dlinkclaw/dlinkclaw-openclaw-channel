@@ -19,7 +19,9 @@ import WSClient from './ws-client.js';
 import { PluginLogger } from 'openclaw/plugin-sdk/core';
 import { getOpenclawPath, getExtCapabilitiesDir } from '../utils.js';
 import { applyModelOverrideToSessionEntry } from 'openclaw/plugin-sdk/model-session-runtime';
-import { getSessionEntry, patchSessionEntry, resolveStorePath, listSessionEntries } from 'openclaw/plugin-sdk/config-runtime';
+// 2026-10-15 适配 openclaw 2026.10.3：config-runtime 子路径已被官方移除（2026-09-30 SDK owner 批准），
+// 下列符号现由 session-store-runtime 导出（同名、签名兼容：resolveStorePath/getSessionEntry/listSessionEntries 仍为同步，patchSessionEntry 为 async，调用处均已 await）
+import { getSessionEntry, patchSessionEntry, resolveStorePath, listSessionEntries } from 'openclaw/plugin-sdk/session-store-runtime';
 // 2026-09-06 适配 openclaw 2026.9.1：approveChannelPairingCode 不再导出，改走宿主 RPC（见 gateway-rpc.ts）
 import { setGatewayClient, approvePairingRequest } from './gateway-rpc.js';
 import { DEFAULT_ACCOUNT_ID } from 'openclaw/plugin-sdk/core';
