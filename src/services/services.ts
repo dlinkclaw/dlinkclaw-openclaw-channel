@@ -9,7 +9,7 @@ import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
-import { AgentCreateParams, AgentSummary, AgentUpdateParams, AskAgentParams, ClawServiceOptions, CmdMessage, CmdParamsPatchSessionEntry, CmdResponse, CmdType, CronListResponse, SystemSummary, TaskSummary } from './types.js';
+import { AgentCreateParams, AgentSummary,  AskAgentParams, ClawServiceOptions, CmdMessage, CmdParamsPatchSessionEntry, CmdResponse, CmdType, CronListResponse, SystemSummary } from './types.js';
 import type {
   ArtifactGetParams, ArtifactDownloadParams,
   AgentFilesListParams, AgentFilesGetParams,
