@@ -42,6 +42,12 @@ export const dlChannel: ChannelPlugin<DLResolvedAccount> = {
     media: true,
     nativeCommands: true,
     blockStreaming: true,
+    tts:{
+      voice:{
+        synthesisTarget:'voice-note',
+        captionedFinalText:true
+      }
+    }
   },
   setupWizard: dlSetupWizard(channelId),
   setup: dlSetupAdapter(channelId),
