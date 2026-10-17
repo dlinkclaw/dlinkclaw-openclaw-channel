@@ -1126,10 +1126,10 @@ export async function routeAndDispatchMessage(ctx: {
   try {
     const ctx = await ctxPayload;
     const mediaFiles: Array<string> = []
-    await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-      ctx,
-      cfg,
-      dispatcherOptions: {
+    // 2026-10-17 方案A（小朵）：改走「配置驱动分发管线」dispatchReplyFromConfig，
+    // 因为 TTS 合成应用点在 dispatch-from-config 管线内，而原
+    // dispatchReplyWithBufferedBlockDispatcher 路径不含该环节（已用探针证实零触发）。
+    const __dispatcherOptions: Parameters<typeof core.channel.reply.createReplyDispatcherWithTyping>[0] = {
         onReplyStart: async () => {
           await client.publishProcessingState({
             streamId,
@@ -1202,12 +1202,12 @@ export async function routeAndDispatchMessage(ctx: {
             mediaFiles
           }, chatOpts);
         },
-      },
-      replyOptions: {
+    };
+    const __replyOptions: any = {
         suppressDefaultToolProgressMessages: true,
         allowProgressCallbacksWhenSourceDeliverySuppressed: true,
         enableHeartbeatTool: true,
-        onAgentRunStart: (runId) => {
+        onAgentRunStart: (runId: string) => {
           logger.info(`Agent run start ... runId = ${runId}`)
           client.publishProcessingState({
             streamId,
@@ -1241,7 +1241,7 @@ export async function routeAndDispatchMessage(ctx: {
             kind: 'end_reasoning'
           });
         },
-        onToolStart: async (payload) => {
+        onToolStart: async (payload: any) => {
           if (!payload.name) {
             return;
           }
@@ -1257,7 +1257,7 @@ export async function routeAndDispatchMessage(ctx: {
             kind: 'tool'
           });
         },
-        onToolResult: async (payload) => {
+        onToolResult: async (payload: any) => {
           if (payload.isError) {
             await client.publishProcessingState({
               streamId,
@@ -1277,7 +1277,7 @@ export async function routeAndDispatchMessage(ctx: {
             });
           }
         },
-        async onItemEvent(payload) {
+        async onItemEvent(payload: any) {
           const kind = payload.kind;
           if (!kind) {
             return;
@@ -1309,7 +1309,7 @@ export async function routeAndDispatchMessage(ctx: {
           });
           logger.info(`onItemEvent >>> kind=${payload.kind}, phase=${payload.phase}, status =${payload.status}, content=${content.join('>')}`)
         },
-        onCommandOutput: async (payload) => {
+        onCommandOutput: async (payload: any) => {
           if (!payload.phase) {
             return;
           }
@@ -1327,7 +1327,7 @@ export async function routeAndDispatchMessage(ctx: {
             kind: 'command'
           });
         },
-        onPatchSummary: async (payload) => {
+        onPatchSummary: async (payload: any) => {
           const strs: Array<string> = [];
           if (payload.title) {
             strs.push(payload.title);
@@ -1344,14 +1344,14 @@ export async function routeAndDispatchMessage(ctx: {
             kind: 'patch'
           })
         },
-        async onPlanUpdate(payload) {
+        async onPlanUpdate(payload: any) {
           const strs: Array<string> = [];
           if (payload.explanation) {
             strs.push(payload.explanation)
           }
           if (payload.steps) {
             strs.push('\n\n');
-            payload.steps.forEach(str => strs.push(`- ${str}`));
+            payload.steps.forEach((str: any) => strs.push(`- ${str}`));
           }
           if (strs.length > 0) {
             logger.info(`onPlanUpdate 输出 >>> ${strs.join('')}`)
@@ -1379,7 +1379,18 @@ export async function routeAndDispatchMessage(ctx: {
             kind: 'block'
           })
         },
-      }
+    };
+    // 2026-10-17 方案A（小朵）：改走配置驱动分发管线 dispatchReplyFromConfig，
+    // TTS 合成在 dispatch-from-config 管线内应用。
+    const __dispatcher = core.channel.reply.createReplyDispatcherWithTyping(__dispatcherOptions);
+    await core.channel.reply.withReplyDispatcher({
+      dispatcher: __dispatcher as any,
+      run: async () => await core.channel.reply.dispatchReplyFromConfig({
+        ctx,
+        cfg,
+        dispatcher: __dispatcher,
+        replyOptions: __replyOptions
+      } as any)
     });
   } catch (err) {
     logger.error(`account[${accountId}] Failed to process message: ${String(err)}`);
