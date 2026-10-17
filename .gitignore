@@ -26,3 +26,7 @@ __pycache__/
 .bak-*
 .env
 .env.*
+
+# 2026-10-17 机器相关 pnpm 配置只保留在本地，不入库
+.npmrc
+.npmrc.local

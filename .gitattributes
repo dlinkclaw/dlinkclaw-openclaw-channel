@@ -1,0 +1,23 @@
+# 统一换行符：仓库内一律 LF，避免 Windows/WSL 双端来回翻转
+* text=auto eol=lf
+
+# 脚本必须 LF，否则 Linux/WSL 下会 bad interpreter: /bin/bash^M
+*.sh text eol=lf
+*.bash text eol=lf
+
+# 二进制文件不做任何转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.zip binary
+*.gz binary
+*.mp3 binary
+*.wav binary
+*.mp4 binary

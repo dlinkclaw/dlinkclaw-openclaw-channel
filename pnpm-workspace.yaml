@@ -10,5 +10,5 @@ allowBuilds:
 # - openclaw: preinstall 版本/包管理器检查（2026-09-06 需 Node >=24.15.0 <25 等）
 # - koffi / tree-sitter-bash: 原生绑定编译，忽略会导致运行时缺模块
 # - @google/genai / protobufjs: preinstall/postinstall 辅助脚本（无害）
-storeDir: /mnt/d/.pnpm-store
-virtualStoreDir: /home/rock/.pnpm-virtual/openclaw-channel-plugin
+# 不自动安装 peerDependencies，避免在插件目录再装一份 openclaw SDK
+autoInstallPeers: false
