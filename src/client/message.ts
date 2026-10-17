@@ -9,6 +9,11 @@ import { buildChannelInboundEventContext, InboundMediaFacts } from "openclaw/plu
 import { uuidStr } from "../utils.js";
 import { ChatType } from "openclaw/plugin-sdk/core";
 
+/** 2026-10-18：只有包含复选框行(- [ ] / - [x] / - [/])的内容才算任务清单。 */
+function isTaskListContent(content: string): boolean {
+  return /(^|\n)\s*[-*]\s*\[[ xX/~%>]*\]\s*\S/.test(content)
+}
+
 export interface ParsedMessageContent {
   textParts: string[];
   imageUrls: string[];
@@ -1273,7 +1278,7 @@ export async function routeAndDispatchMessage(ctx: {
               streamId,
               content,
               status: 'read',
-              kind: 'plan',
+              kind: isTaskListContent(content) ? 'plan' : 'block',
             });
           }
         },
@@ -1355,11 +1360,12 @@ export async function routeAndDispatchMessage(ctx: {
           }
           if (strs.length > 0) {
             logger.info(`onPlanUpdate 输出 >>> ${strs.join('')}`)
+            const joined = strs.join('');
             await client.publishProcessingState({
               streamId,
-              content: strs.join(''),
+              content: joined,
               status: 'read',
-              kind: 'plan'
+              kind: isTaskListContent(joined) ? 'plan' : 'block'
             })
           }
         },

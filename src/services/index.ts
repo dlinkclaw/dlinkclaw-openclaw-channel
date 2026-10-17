@@ -164,10 +164,14 @@ export class CmdHandler {
                 LAST_PUSHED_CONTENT.clear(); // 简单上限保护，避免 Map 无限增长
               }
               LAST_PUSHED_CONTENT.set(streamId, content);
+              // 2026-10-18 修复（石头哥：任务清单里显示成中间文本）：
+              // 只有包含复选框行（- [ ] / - [x] / - [/]）的内容才是真正的任务清单；
+              // 其余中间文本降级为 block，避免污染客户端的任务清单 store。
+              const isTaskList = /(^|\n)\s*[-*]\s*\[[ xX/~%>]*\]\s*\S/.test(content);
               this.dlClient.publishProcessingState({
                 streamId,
                 content,
-                kind: 'plan',
+                kind: isTaskList ? 'plan' : 'block',
                 status: 'read'
               })
             }
