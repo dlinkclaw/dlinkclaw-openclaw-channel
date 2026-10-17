@@ -20,6 +20,12 @@ IMG_TAG="${WR_IMAGE_TAG:-kokoro-20260914}"
 # 国内源：暂未发布（留空自动跳过）；发布后填入 registry.cn-hangzhou.aliyuncs.com/NAMESPACE/dlinkclaw-tts:${IMG_TAG}
 IMG_CN="${WR_IMAGE_CN:-}"
 IMG_INTL="${WR_IMAGE_INTL:-ghcr.io/rockychen2016/dlinkclaw-tts:${IMG_TAG}}"
+
+# 2026-10-18：仅显式设置 WR_PROXY 时启用代理
+if [ -n "${WR_PROXY:-}" ]; then
+  export HTTPS_PROXY="$WR_PROXY" HTTP_PROXY="$WR_PROXY" ALL_PROXY="$WR_PROXY"
+  echo "  使用代理: $WR_PROXY"
+fi
 VB_IMAGE=""
 INSTALL_DIR="$(dirname "$(readlink -f "$0")")"
 
@@ -164,6 +170,14 @@ if ss -tlnp 2>/dev/null | grep -q ":$VB_PORT "; then
 else
   echo -e "${GREEN}空闲${NC}"
   VB_ACTUAL_PORT=$VB_PORT
+
+# 2026-10-18：snap docker + WSL 下 docker-proxy 端口发布不通，改用 host 网络
+if [ -d /var/snap/docker/common ]; then
+  NET_ARGS=(--network host)
+  VB_ACTUAL_PORT=17493
+else
+  NET_ARGS=(-p "127.0.0.1:${VB_ACTUAL_PORT}:17493")
+fi
 fi
 
 # ── 拉取 Voicebox 镜像 ──
@@ -196,7 +210,7 @@ chmod -R 777 "$VB_DIR/data" 2>/dev/null || true
 #   否则会遮蔽镜像内已内置的模型/数据（旧版 clone+build 方案才需要挂卷）。
 docker rm -f voicebox >/dev/null 2>&1 || true
 if ! docker run -d --name voicebox --restart unless-stopped \
-    -p "127.0.0.1:${VB_ACTUAL_PORT}:17493" \
+    "${NET_ARGS[@]}" \
     -v "$VB_DIR/data:/app/data" \
     -e LOG_LEVEL=info \
     -e NUMBA_CACHE_DIR=/tmp/numba_cache \
@@ -211,7 +225,7 @@ echo "  ✅ docker run 启动成功"
 # 等待 API 就绪
 echo -n "  等待 Voicebox API 就绪..."
 for i in $(seq 1 90); do
-  if curl -s --max-time 2 "http://${VB_HOST}:${VB_ACTUAL_PORT}/mcp" >/dev/null 2>&1; then
+  if curl -s --max-time 2 "http://${VB_HOST}:${VB_ACTUAL_PORT}/health" >/dev/null 2>&1; then
     echo -e " ${GREEN}OK${NC} (耗时 ${i} 次检查)"
     break
   fi
@@ -219,7 +233,7 @@ for i in $(seq 1 90); do
   echo -n "."
 done
 
-if ! curl -s --max-time 2 "http://${VB_HOST}:${VB_ACTUAL_PORT}/mcp" >/dev/null 2>&1; then
+if ! curl -s --max-time 2 "http://${VB_HOST}:${VB_ACTUAL_PORT}/health" >/dev/null 2>&1; then
   echo ""
   echo -e "${RED}Voicebox 启动失败${NC}"
   echo "  检查日志: docker logs voicebox"
@@ -311,7 +325,7 @@ echo -n "  Docker 容器: "
 docker ps --format '{{.Names}}' 2>/dev/null | grep -q voicebox && echo -e "${GREEN}运行中${NC}" || echo -e "${RED}未运行${NC}"
 
 echo -n "  API 连通性: "
-curl -s --max-time 2 "http://${VB_HOST}:${VB_ACTUAL_PORT}/mcp" >/dev/null 2>&1 \
+curl -s --max-time 2 "http://${VB_HOST}:${VB_ACTUAL_PORT}/health" >/dev/null 2>&1 \
   && echo -e "${GREEN}OK${NC} (http://${VB_HOST}:${VB_ACTUAL_PORT})" \
   || echo -e "${RED}无法连接${NC}"
 

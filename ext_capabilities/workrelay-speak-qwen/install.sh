@@ -22,6 +22,14 @@ IMG_TAG="${WR_IMAGE_TAG:-qwen-20260914}"
 # 国内源：暂未发布（留空自动跳过）；发布后填入 registry.cn-hangzhou.aliyuncs.com/NAMESPACE/dlinkclaw-tts:${IMG_TAG}
 IMG_CN="${WR_IMAGE_CN:-}"
 IMG_INTL="${WR_IMAGE_INTL:-ghcr.io/rockychen2016/dlinkclaw-tts:${IMG_TAG}}"
+
+# 2026-10-18：仅显式设置 WR_PROXY 时启用代理；同时透传给容器内模型下载
+PROXY_ARGS=()
+if [ -n "${WR_PROXY:-}" ]; then
+  export HTTPS_PROXY="$WR_PROXY" HTTP_PROXY="$WR_PROXY" ALL_PROXY="$WR_PROXY"
+  PROXY_ARGS=(-e "HTTPS_PROXY=$WR_PROXY" -e "HTTP_PROXY=$WR_PROXY" -e "ALL_PROXY=$WR_PROXY")
+  echo "  使用代理: $WR_PROXY"
+fi
 VB_IMAGE=""
 # 千问模型（CustomVoice 预设音色版，1.7B）
 QWEN_MODEL="${WR_QWEN_MODEL:-Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice}"
@@ -191,6 +199,7 @@ mkdir -p "$HF_CACHE"
 if docker run --rm \
     -v "$HF_CACHE:/hf-cache" \
     -e HF_ENDPOINT="$HF_MIRROR" \
+    "${PROXY_ARGS[@]}" \
     -e HF_HUB_OFFLINE=0 \
     -e HF_HUB_DISABLE_PROGRESS_BARS=1 \
     --entrypoint python3 \

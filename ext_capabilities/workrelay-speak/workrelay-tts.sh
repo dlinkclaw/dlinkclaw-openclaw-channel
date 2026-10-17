@@ -79,7 +79,7 @@ except Exception:
 fi
 
 # JSON-escape text
-TEXT_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$TEXT")
+TEXT_JSON=$(python3 "$HOME/.workrelay/speak/clean_text.py" "$TEXT")
 
 # 提交生成请求
 RESP=$(curl --noproxy '*' -s --max-time 15 -X POST "$BASE_URL/generate" \

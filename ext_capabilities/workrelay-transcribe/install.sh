@@ -12,6 +12,14 @@ INSTALL_DIR="$HOME/.workrelay/transcribe"
 MODEL_CACHE="$HOME/.cache/faster-whisper"
 WR_DIR="$(dirname "$(readlink -f "$0")")"
 
+# 2026-10-18：代理仅在显式设置 WR_PROXY 时启用（不自动探测，海外用户直连）
+if [ -n "${WR_PROXY:-}" ]; then
+  export HTTPS_PROXY="$WR_PROXY"
+  export HTTP_PROXY="$WR_PROXY"
+  export ALL_PROXY="$WR_PROXY"
+  echo "  使用代理: $WR_PROXY"
+fi
+
 echo "============================================"
 echo "  WorkRelay 语音转录 - 一键安装"
 echo "============================================"
@@ -95,6 +103,116 @@ if ! pip_install install --user --quiet --break-system-packages faster-whisper 2
     exit 1
   fi
 fi
+echo -e "${GREEN}OK${NC}"
+
+# ── 下载模型 ──
+echo -n "[4/5] 下载 Whisper 模型 (~460MB)... "
+echo ""
+# 2026-08-18 修复：systemd 透传的 all_proxy 可能是 socks5://（如 clash），
+# 而 httpx 初始化 SOCKS 代理需要 socksio 包（默认未装）→ ImportError 导致下载失败。
+# clash 混合端口（7890）同时支持 HTTP，这里将 socks5:// 降级为 http://，无需额外装包。
+if [[ "${all_proxy:-}${ALL_PROXY:-}" == *"socks5://"* ]]; then
+  echo "  ℹ 检测到 socks5 代理，降级为 http 代理（clash 混合端口兼容），避免 socksio 依赖"
+  export all_proxy="${all_proxy//socks5:/http:}"
+  export ALL_PROXY="${ALL_PROXY//socks5:/http:}"
+fi
+# 2026-08-18 修复：国内机器直连 HuggingFace 经常 Network unreachable，
+# 增加 hf-mirror.com 镜像自动 fallback（HF_ENDPOINT 环境变量由 huggingface_hub 原生支持）。
+# 直连失败 → 镜像重试 → 仍失败给出手动指引。
+dl_model() {
+  python3 -c "
+import os
+from huggingface_hub import snapshot_download
+endpoint = os.environ.get('HF_ENDPOINT', 'https://huggingface.co')
+print(f'  正在从 {endpoint} 下载 faster-whisper-small ...')
+snapshot_download('Systran/faster-whisper-small',
+                  cache_dir='$MODEL_CACHE')
+print('  模型下载完成')
+" 2>&1
+}
+# 2026-09-14 优化（石头哥）：按区域决定下载顺序
+#   国内（WR_IMAGE_REGION=cn，客户端中文界面传入）→ 镜像优先，省掉直连超时等待
+#   国际/未指定 → 直连优先；两种顺序都保留"失败自动回退另一种"+ 手动指引
+HF_MIRROR_URL="${WR_HF_ENDPOINT:-https://hf-mirror.com}"
+dl_fail_msg() {
+  echo -e "${RED}模型下载失败${NC}"
+  echo "提示：检查网络连接，或手动设置 WR_WHISPER_CACHE 到已有模型目录"
+  echo "  也可手动下载：HF_ENDPOINT=${HF_MIRROR_URL} python3 -c \"from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-small', cache_dir='$MODEL_CACHE')\""
+}
+if [ "${WR_IMAGE_REGION:-auto}" = "cn" ] && [ -z "${WR_HF_ENDPOINT:-}" ]; then
+  # 国内：镜像优先（避免先直连超时白等）
+  if HF_ENDPOINT="$HF_MIRROR_URL" dl_model; then
+    echo "  ✅ 已通过国内镜像 hf-mirror.com 下载（国内优先，跳过直连等待）"
+  elif dl_model; then
+    echo "  ℹ 国内镜像不可用，已直连 HuggingFace 下载成功"
+  else
+    dl_fail_msg
+    exit 1
+  fi
+else
+  # 国际/自动：直连优先，失败回退镜像
+  if dl_model; then
+    :
+  elif HF_ENDPOINT="$HF_MIRROR_URL" dl_model; then
+    echo "  ℹ 直连 HuggingFace 失败，已通过国内镜像 hf-mirror.com 下载成功"
+  else
+    dl_fail_msg
+    exit 1
+  fi
+fi
+echo -e "  ${GREEN}OK${NC}"
+
+# ── 安装脚本 & 配置 OpenClaw ──
+echo -n "[5/5] 部署脚本 & 配置 OpenClaw... "
+mkdir -p "$INSTALL_DIR"
+cp "$WR_DIR/transcribe.py" "$INSTALL_DIR/"
+cp "$WR_DIR/transcribe_server.py" "$INSTALL_DIR/"
+cp "$WR_DIR/voicebox-transcribe.sh" "$INSTALL_DIR/"
+chmod +x "$INSTALL_DIR/voicebox-transcribe.sh" "$INSTALL_DIR/transcribe.py" "$INSTALL_DIR/transcribe_server.py"
+
+# 2026-08-12：启动常驻转写服务（模型常驻内存，免每次重新加载）。
+# 已在跑则跳过；未跑则后台 detached 启动，日志写入 ~/.openclaw/logs/wr-transcribe-server.log。
+WR_SERVER_PORT="${WR_WHISPER_PORT:-17890}"
+if curl -s --connect-timeout 2 "http://127.0.0.1:${WR_SERVER_PORT}/health" >/dev/null 2>&1; then
+  echo -n " (常驻服务已运行) "
+else
+  mkdir -p "$(dirname "$HOME/.openclaw/logs/wr-transcribe-server.log" 2>/dev/null)" 2>/dev/null || true
+  nohup python3 "$INSTALL_DIR/transcribe_server.py" "$WR_SERVER_PORT" \
+    >>"$HOME/.openclaw/logs/wr-transcribe-server.log" 2>&1 &
+  echo -n " (常驻服务已启动) "
+fi
+
+# 写入 OpenClaw 配置
+if command -v openclaw &>/dev/null; then
+  LINK="$INSTALL_DIR/voicebox-transcribe.sh"
+  # 2026-10-18 OpenClaw 2026.10.x：入站语音转写走 tools.media.models（capability=audio）
+  # 保留现有 models，只替换/追加 voicebox-transcribe 条目
+  CUR="$(openclaw config get tools.media.models --json 2>/dev/null || echo '[]')"
+  PATCH="$(printf '%s' "$CUR" | python3 -c '
+import json, sys
+link = sys.argv[1]
+try:
+    models = json.load(sys.stdin)
+except Exception:
+    models = []
+if not isinstance(models, list):
+    models = []
+models = [m for m in models if not (isinstance(m, dict) and "voicebox-transcribe" in str(m.get("command", "")))]
+models.append({"type": "cli", "command": link, "args": ["{{MediaPath}}"], "capabilities": ["audio"]})
+print(json.dumps({"tools": {"media": {"models": models, "audio": {"enabled": True}}}}))
+' "$LINK")"
+
+  if printf '%s' "$PATCH" | openclaw config patch --stdin >/dev/null 2>&1; then
+    echo "  ✅ 已写入 tools.media.models（本地 faster-whisper）"
+  else
+    openclaw config set audio.transcription.command "[\"$LINK\", \"{{MediaPath}}\"]" >/dev/null 2>&1       || echo -e "${YELLOW}⚠ OpenClaw 配置写入失败，请手动配置 tools.media.models${NC}"
+    openclaw config set tools.media.audio.models "[{\"type\":\"cli\",\"command\":\"$LINK\",\"args\":[\"{{MediaPath}}\"]}]" >/dev/null 2>&1 || true
+  fi
+  openclaw gateway restart 2>/dev/null || echo "  提示：自动重启失败，请手动重启 OpenClaw 网关"
+else
+  echo -e "${YELLOW}⚠ 未检测到 openclaw CLI，跳过自动配置${NC}"
+fi
+
 echo -e "${GREEN}OK${NC}"
 
 # ── 下载模型 ──

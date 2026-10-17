@@ -45,6 +45,7 @@ export const dlChannel: ChannelPlugin<DLResolvedAccount> = {
     tts:{
       voice:{
         synthesisTarget:'voice-note',
+        transcodesAudio:true,
         captionedFinalText:true
       }
     }
