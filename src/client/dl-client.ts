@@ -288,24 +288,39 @@ export class DLClient extends EventEmitter {
     }
 
     async stop() {
+        // 2026-10-19：关闭阶段必须有界。MQTT end 回调或 HTTP 上报只要有一个不返回，
+        // 网关的 drain 就会一直等（systemd TimeoutStopSec 默认 15 分钟），表现为重启卡死。
         if (this.mqttClient) {
-            // 2026-09-16 修复：原实现不等 end 回调（清理动作都在回调里），与紧随其后的 start()
-            // 形成竞态：isConnected() 仍为 true → 跳过 connect()，随后回调才把 mqttClient /
-            // cmdHandler / mqttConfig 清空 → 连接彻底废掉。这里等回调执行完再返回。
-            await new Promise<void>((resolve) => {
-                this.mqttClient!.end(false, () => {
+            await Promise.race([
+                new Promise<void>((resolve) => {
+                    this.mqttClient!.end(true, () => {
+                        this.mqttClient = null;
+                        this.logger.warn(`DLClient account[${this.ctx.account.accountId}] Disconnected`);
+                        if (this.cmdHandler) {
+                            this.cmdHandler.cleanup();
+                        }
+                        this.cmdHandler = null;
+                        this.mqttConfig = null;
+                        resolve();
+                    });
+                }),
+                new Promise<void>((resolve) => setTimeout(() => {
+                    this.logger.warn(`DLClient account[${this.ctx.account.accountId}] mqtt end timeout(3s), force continue`);
                     this.mqttClient = null;
-                    this.logger.warn(`DLClient account[${this.ctx.account.accountId}] Disconnected`);
-                    if (this.cmdHandler) {
-                        this.cmdHandler.cleanup();
-                    }
                     this.cmdHandler = null;
                     this.mqttConfig = null;
                     resolve();
-                });
-            });
+                }, 1200)),
+            ]);
         }
-        await this.changeConnectStatus('stop');
+        try {
+            await Promise.race([
+                this.changeConnectStatus('stop'),
+                new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+            ]);
+        } catch (e) {
+            this.logger.warn(`DLClient changeConnectStatus(stop) failed: ${String(e)}`);
+        }
     }
 
     /**

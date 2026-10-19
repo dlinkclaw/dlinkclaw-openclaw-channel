@@ -1278,7 +1278,7 @@ export async function routeAndDispatchMessage(ctx: {
               streamId,
               content,
               status: 'read',
-              kind: isTaskListContent(content) ? 'plan' : 'block',
+              kind: isTaskListContent(content) ? 'plan' : 'commentary',
             });
           }
         },
@@ -1365,7 +1365,7 @@ export async function routeAndDispatchMessage(ctx: {
               streamId,
               content: joined,
               status: 'read',
-              kind: isTaskListContent(joined) ? 'plan' : 'block'
+              kind: isTaskListContent(joined) ? 'plan' : 'commentary'
             })
           }
         },

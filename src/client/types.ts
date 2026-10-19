@@ -123,7 +123,7 @@ export interface DLMixedBody extends DLBaseBody {
   quote?: DLQuoteBase
 }
 
-export type DLKind = 'block' | 'in_process' | 'tool' | 'plan' | 'patch' | 'command' | 'reasoning' | 'end_reasoning'
+export type DLKind = 'block' | 'in_process' | 'tool' | 'plan' | 'patch' | 'command' | 'reasoning' | 'end_reasoning' | 'commentary'
 export type MessageStatus = 'read' | 'unRead' | undefined
 export interface ChatUser {
   id: string

@@ -171,7 +171,7 @@ export class CmdHandler {
               this.dlClient.publishProcessingState({
                 streamId,
                 content,
-                kind: isTaskList ? 'plan' : 'block',
+                kind: isTaskList ? 'plan' : 'commentary',
                 status: 'read'
               })
             }
