@@ -68,7 +68,7 @@
       "selectionLabel": "朵联(DLinkClaw)",
       "docsPath": "/channels/dlinkclaw-openclaw",
       "docsLabel": "dlinkclaw-openclaw",
-      "blurb": "朵联 DLinkClaw OpenClaw 接入通道, 本地部署连接朵联客户端, 支持企业微信、QQ、钉钉、飞书, 无需公网IP.",
+      "blurb": "朵联 DLinkClaw OpenClaw 接入通道, 本地或云端部署OpenClaw连接朵联客户端, 支持企业微信、QQ、钉钉、飞书, 无需公网IP.",
       "aliases": [
         "dlink",
         "DLinkClaw",
