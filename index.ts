@@ -5,8 +5,9 @@ import { channelMeta, dlChannel, LOG_TAG } from "./src/channel.js";
 import { setDLLogger, setDLRuntime, isRunStopped } from "./src/runtime.js";
 
 const meta = channelMeta;
-//临时增加，用于本地调式开发回调本地服务的TLS证书问题，生产环境时务必去除
-const isDebug = channelMeta.isDebug;
+// 2026-10-19：调试开关改为环境变量控制，不再依赖 package.json 的 isDebug（发布时容易忘改）。
+// 开发环境设置 DLINKCLAW_DEBUG=1（或 true）即启用；生产/其他用户无此变量时自动关闭。
+const isDebug = meta.isDebug; //process.env.DLINKCLAW_DEBUG === "1" || process.env.DLINKCLAW_DEBUG === "true";
 if(isDebug){
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
     process.env.NODE_ENV = 'dev';
