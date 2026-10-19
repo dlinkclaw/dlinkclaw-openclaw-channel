@@ -11,4 +11,4 @@ allowBuilds:
 # - koffi / tree-sitter-bash: 原生绑定编译，忽略会导致运行时缺模块
 # - @google/genai / protobufjs: preinstall/postinstall 辅助脚本（无害）
 # 不自动安装 peerDependencies，避免在插件目录再装一份 openclaw SDK
-autoInstallPeers: false
+# autoInstallPeers: false
