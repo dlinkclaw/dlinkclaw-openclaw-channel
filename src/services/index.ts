@@ -26,7 +26,10 @@ export class CmdHandler {
   private isInitialized = false;
   constructor(config: ClawServiceOptions, dlClient: DLClient, logger: PluginLogger) {
     this.dlClient = dlClient;
-    this.services = new ClawServices(config, logger);
+    // 2026-10-21：终端输出经 MQTT 事件回推客户端（协议级能力，品牌无关）
+    this.services = new ClawServices(config, logger, (sessionId, data) => {
+      void this.dlClient.publishEventToDLClient({ sessionId, data }, 'onTerminal');
+    });
   }
 
   private log(msg: string, type: 'info' | 'warn' | 'error' | 'debug') {
@@ -238,6 +241,17 @@ export class CmdHandler {
     } else {
       this.log(`🔄CMD 指令:${rawMessage.cmd}, params=${JSON.stringify(rawMessage)}`, 'info')
     }
+    // 2026-10-21：终端能力仅限团队创建人（owner）。
+    // from 是客户端自己的 chat topic：usr_/<empId>/chat，与 ownerEmpId 比对即可。
+    if (typeof rawMessage.cmd === 'string' && rawMessage.cmd.startsWith('terminal.')) {
+      const owner = this.dlClient.getOwnerEmpId();
+      const expected = owner ? `usr_/${owner}/chat` : '';
+      if (!owner || rawMessage.from !== expected) {
+        this.log(`terminal denied: from=${rawMessage.from}, owner=${owner}`, 'warn');
+        return { success: false, error: 'terminal: forbidden (owner only)', timestamp: Date.now() };
+      }
+    }
+
     try {
       // 调用服务层处理
       return await this.services!.handleCmdMessage(rawMessage);

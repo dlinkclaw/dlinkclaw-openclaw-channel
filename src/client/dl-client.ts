@@ -43,6 +43,8 @@ export interface MqttConfig {
     clientTopics: Array<string>
     openUserTopics: Array<string>
     openUserNotifyTopics: Array<string>
+    /** 2026-10-21：团队创建人 empId（owner-only 能力校验） */
+    ownerEmpId?: string
 }
 
 export class DLClient extends EventEmitter {
@@ -333,6 +335,11 @@ export class DLClient extends EventEmitter {
      * 而本方法的目的只是刷新 openUserTopics——它是 publishEventToDLClient（L348）实时读取的，
      * 与 MQTT 订阅目标（clientTopics）、Gateway WS 通道都无关 → 只刷新配置即可，不断连、不重连。
      */
+    /** 2026-10-21：团队创建人（终端等 owner-only 能力使用） */
+    getOwnerEmpId(): string | undefined {
+        return this.mqttConfig?.ownerEmpId;
+    }
+
     async refreshConfigAndReconnect(): Promise<void> {
         try {
             await this.fetchConfig();

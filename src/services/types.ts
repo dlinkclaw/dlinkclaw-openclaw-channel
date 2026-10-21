@@ -397,6 +397,12 @@ export type CmdType =
   | 'sessions.patch'
   | 'sessions.currentModel'
 
+  // 2026-10-21：终端能力（品牌中立协议，owner-only）
+  | 'terminal.open'
+  | 'terminal.input'
+  | 'terminal.resize'
+  | 'terminal.close'
+
   | 'chat.history'
   | 'chat.trajectory' //会话聊天内容轨迹,加载的是sessionId.jsonl文件, 不是sessionId.trajectory.jsonl
 
@@ -466,6 +472,7 @@ export type EventType =
   | 'onSkillError'
   | 'onPairingRequest'
   | 'onPairingResult'
+  | 'onTerminal'
 
 
 export type CmdParamsPatchSessionEntry = {
@@ -558,3 +565,9 @@ export interface AgentFilesGetParams {
   agentId: string;
   name: string;
 }
+
+// ==================== 终端（2026-10-21，协议级能力） ====================
+export type TerminalOpenParams = { sessionId: string; cwd?: string; cols?: number; rows?: number };
+export type TerminalInputParams = { sessionId: string; data: string };
+export type TerminalResizeParams = { sessionId: string; cols: number; rows: number };
+export type TerminalCloseParams = { sessionId: string };

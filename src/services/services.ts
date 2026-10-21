@@ -26,6 +26,7 @@ import { getSessionEntry, patchSessionEntry, resolveStorePath, listSessionEntrie
 import { setGatewayClient, approvePairingRequest } from './gateway-rpc.js';
 import { DEFAULT_ACCOUNT_ID } from 'openclaw/plugin-sdk/core';
 import { markRunStopped } from '../runtime.js';
+import { TerminalManager, TerminalDataSink } from './terminal.js';
 
 
 
@@ -38,10 +39,16 @@ export class ClawServices extends EventEmitter {
   private readonly options: ClawServiceOptions;
   private isInitialized = false;
   private readonly logger: PluginLogger;
-  constructor(options: ClawServiceOptions, logger: PluginLogger) {
+  // 2026-10-21：终端会话管理（PTY / 管道）
+  private readonly terminalManager: TerminalManager;
+  constructor(options: ClawServiceOptions, logger: PluginLogger, terminalSink?: TerminalDataSink) {
     super();
     this.options = options;
     this.logger = logger;
+    this.terminalManager = new TerminalManager(
+      terminalSink ?? (() => { }),
+      (msg, type) => this.log(msg, (type as any) ?? 'info'),
+    );
   }
 
   log(msg: string, type: 'info' | 'warn' | 'error' | 'debug') {
@@ -293,6 +300,20 @@ export class ClawServices extends EventEmitter {
           // 新增 cmd 通道 chat.abort ， 以上两个/stop, /queue interrupt都不能立即终止执行中的会话
           result = await this.handlChatAbout(cmdMessage.params!);
           break;
+        // 2026-10-21：终端能力（owner-only，见 CmdHandler 校验）
+        case 'terminal.open':
+          result = await this.terminalManager.open(cmdMessage.params as any);
+          break;
+        case 'terminal.input':
+          result = this.terminalManager.write(cmdMessage.params?.sessionId, cmdMessage.params?.data ?? '');
+          break;
+        case 'terminal.resize':
+          result = this.terminalManager.resize(cmdMessage.params?.sessionId, cmdMessage.params?.cols, cmdMessage.params?.rows);
+          break;
+        case 'terminal.close':
+          result = this.terminalManager.close(cmdMessage.params?.sessionId);
+          break;
+
         case 'pairing.approve':
           // 2026-09-06 适配 openclaw 2026.9.1：审批改按 requestId（宿主 RPC），客户端由 onPairingRequest 事件获取；
           // code 保留解析用于旧客户端兼容提示（9.1 起宿主 list 不再暴露 code，无法按 code 审批）
