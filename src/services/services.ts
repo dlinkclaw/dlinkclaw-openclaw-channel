@@ -364,10 +364,19 @@ export class ClawServices extends EventEmitter {
    * @param userId 
    */
   private async handleUpdateSessionModel(params: CmdParamsPatchSessionEntry) {
-    const { sessionKey, provider, model } = params;
-    if (!provider || provider.length === 0 || !sessionKey || sessionKey.length === 0) {
+    const { sessionKey, provider, model, thinkingLevel } = params;
+    if (!sessionKey || sessionKey.length === 0) {
       return null;
     }
+    // 2026-10-21：支持「只改推理强度」的 patch；provider/model 与 thinkingLevel 至少给一个
+    if ((!provider || provider.length === 0 || !model || model.length === 0) && !thinkingLevel) {
+      return null;
+    }
+    // 推理强度合法值校验（off/minimal/low/medium/high），非法值直接忽略
+    const THINK_LEVELS = ['off', 'minimal', 'low', 'medium', 'high'];
+    const thinkOverride = thinkingLevel && THINK_LEVELS.includes(thinkingLevel)
+      ? thinkingLevel
+      : undefined;
     const agentId = sessionKey.split(':')[1]
     const { cfg, channelId } = this.options;
     const storePath = resolveStorePath(cfg.session?.store, { agentId });
@@ -380,19 +389,25 @@ export class ClawServices extends EventEmitter {
       storePath,
       sessionKey: realKey,
       update: (entry) => {
-        applyModelOverrideToSessionEntry({
-          entry,
-          selection: {
-            provider: provider,
-            model: model,
-          },
-          selectionSource: 'user',
-          markLiveSwitchPending: true, // 让当前 run 立即生效
-        });
+        if (provider && model) {
+          applyModelOverrideToSessionEntry({
+            entry,
+            selection: {
+              provider: provider,
+              model: model,
+            },
+            selectionSource: 'user',
+            markLiveSwitchPending: true, // 让当前 run 立即生效
+          });
+        }
+        // 2026-10-21：会话级推理强度写入（与模型覆盖同层持久化）
+        if (thinkOverride) {
+          entry.thinkingLevel = thinkOverride;
+        }
         return { ...entry };
       },
     });
-    return { provider, model };
+    return { provider, model, thinkingLevel: thinkOverride };
   }
 
   /**
@@ -452,13 +467,16 @@ export class ClawServices extends EventEmitter {
     if (!entry) return null;
 
     // 只返回用户主动设置的覆盖，不返回 auto fallback
+    const result: Record<string, string | undefined> = {};
     if (entry.modelOverrideSource === 'user' && entry.modelOverride) {
-      return {
-        provider: entry.providerOverride ?? '',
-        model: entry.modelOverride,
-      };
+      result.provider = entry.providerOverride ?? '';
+      result.model = entry.modelOverride;
     }
-    return null;
+    // 2026-10-21：会话级推理强度回显
+    if (entry.thinkingLevel) {
+      result.thinkingLevel = entry.thinkingLevel;
+    }
+    return Object.keys(result).length > 0 ? result : null;
   }
 
   //#region ==================== Agent 管理处理器 ====================

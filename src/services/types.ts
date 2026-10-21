@@ -471,7 +471,9 @@ export type EventType =
 export type CmdParamsPatchSessionEntry = {
   sessionKey:string
   provider?: string,
-  model: string,
+  model?: string,
+  /** 2026-10-21：会话级推理强度（off/minimal/low/medium/high），与模型选择同通道 */
+  thinkingLevel?: string,
 }
 
 // ==================== Skill 类型 ====================
