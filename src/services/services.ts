@@ -177,9 +177,11 @@ export class ClawServices extends EventEmitter {
           if (!result) {
             result = await this.handleAgentCreate(cmdMessage.params!);
           }
+
           break;
         case 'agent.update':
           result = await this.handleAgentUpdate(cmdMessage.params!);
+
           break;
         case 'agent.delete':
           result = await this.handleAgentDelete(cmdMessage.params);
@@ -517,6 +519,47 @@ export class ClawServices extends EventEmitter {
     }));
   }
 
+  /**
+   * 2026-10-22：网关在 agents.create/update 后会做配置热加载，RPC 响应帧可能丢失，
+   * 插件侧 ws-client 默认要干等 30s，导致中继先超时。
+   * 这里对 RPC 加短超时，超时后由调用方回查 listAgents 确认是否已生效。
+   */
+  private rpcWithTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+    // 避免落败 promise 产生 unhandledRejection
+    void p.catch(() => { });
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${label} rpc timeout after ${ms}ms`)), ms);
+      p.then(
+        (v) => { clearTimeout(timer); resolve(v); },
+        (e) => { clearTimeout(timer); reject(e); },
+      );
+    });
+  }
+
+  /** 回查 agent 是否已写入（热加载完成后可见） */
+  private async findAgentConfirmed(params: Record<string, string>) {
+    const wantedId = (params.id ?? '').toLowerCase();
+    const wantedName = (params.name ?? '').toLowerCase();
+    for (let i = 0; i < 6; i++) {
+      try {
+        const agents = await this.rpcWithTimeout(this.client!.listAgents(), 5000, 'agents.list');
+        const found = agents.agents.find((a) => {
+          const id = (a.id ?? '').toLowerCase();
+          const nm = (a.name ?? '').toLowerCase();
+          return (wantedId.length > 0 && (id === wantedId || nm === wantedId))
+            || (wantedName.length > 0 && (nm === wantedName || id === wantedName));
+        });
+        if (found) {
+          return found;
+        }
+      } catch {
+        // 热加载期间 list 可能失败，稍后重试
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    return undefined;
+  }
+
   private async handleAgentCreate(params: Record<string, string>): Promise<{ id: string; name: string }> {
     const workspace_path = getOpenclawPath('workspace', params.id.toLowerCase().replace(/\s+/g, '-'))
     const provider = params.provider ?? ''
@@ -528,23 +571,35 @@ export class ClawServices extends EventEmitter {
       avatar: (params.avatar && params.avatar.length > 0) ? this.options.baseUrl + params.avatar : undefined,
       model: provider.length > 0 ? `${provider}/${params.model}` : params.model,
     }
-    const result = await this.client!.createAgent(createParams);
+    let result: { agentId: string } ;
+    try {
+      result = await this.rpcWithTimeout(this.client!.createAgent(createParams), 8000, 'agents.create');
+    } catch (e) {
+      // 响应可能因热加载丢失，但配置已写入 → 回查确认
+      const confirmed = await this.findAgentConfirmed(params);
+      if (!confirmed) {
+        throw e;
+      }
+      this.log(`agents.create 响应超时但已生效：${confirmed.id}`, 'warn');
+      result = { agentId: confirmed.id };
+    }
     // 2026-09-18 修复（石头哥报：首次点击创建失败，且 name 未写入 openclaw.json）：
     // agents.create 后网关是「异步热加载配置」的（日志：create 186ms 成功，紧跟的
     // agents.update 报 agent "xiaoha" not found，1 秒后 config hot reload applied）。
     // 这里改用「update 快速失败重试」：agents.update 对未就绪 agent 是 2ms 快速返回 not found
     // （ws-client.send 在 WS 未连接时也快速抛错），不会挂起；热加载完成后下一次即成功。
     // 避免原 waitAgentReady 用 listAgents 轮询导致客户端 loading 超时的问题。
-    const MAX_UPDATE_RETRY = 10;
+    // 2026-10-22：单次 update 已加 4s 超时，重试次数收紧，避免最坏情况超过中继 30s
+    const MAX_UPDATE_RETRY = 3;
     const UPDATE_RETRY_MS = 500;
     let nameWritten = false;
     for (let i = 0; i < MAX_UPDATE_RETRY && !nameWritten; i++) {
       try {
-        const up = await this.client!.updateAgent({
+        const up = await this.rpcWithTimeout(this.client!.updateAgent({
           agentId: result.agentId,
           name: params.name,
           workspace: workspace_path,
-        });
+        }), 4000, 'agents.update');
         if (up?.ok) {
           nameWritten = true;
         }
@@ -572,25 +627,43 @@ export class ClawServices extends EventEmitter {
   }
 
   private async handleAgentUpdate(params: Record<string, string>): Promise<{ id: string }> {
-    const agents = await this.client!.listAgents();
+    let agents: { agents: Array<{ id: string; name?: string }> };
+    try {
+      agents = await this.rpcWithTimeout(this.client!.listAgents(), 5000, 'agents.list');
+    } catch {
+      agents = { agents: [] };
+    }
     const agent = agents.agents.find(a => a.id === params.agentId);
     const provider = params.provider ?? ''
     if (agent) {
       //agent存在直接更新
-      const result = await this.client!.updateAgent({
-        agentId: params.agentId,
-        name: params.name,
-        workspace: params.workspace,
-        model: provider.length > 0 ? `${provider}/${params.model}` : params.model,
-        avatar: params.avatar
-      });
+      let result: { agentId: string };
+      try {
+        result = await this.rpcWithTimeout(this.client!.updateAgent({
+          agentId: params.agentId,
+          name: params.name,
+          workspace: params.workspace,
+          model: provider.length > 0 ? `${provider}/${params.model}` : params.model,
+          avatar: params.avatar
+        }), 8000, 'agents.update');
+      } catch (e) {
+        // 响应可能因热加载丢失，但配置已写入 → 回查确认
+        const confirmed = await this.findAgentConfirmed({ id: params.agentId, name: params.name });
+        if (!confirmed) {
+          throw e;
+        }
+        this.log(`agents.update 响应超时但已生效：${confirmed.id}`, 'warn');
+        result = { agentId: confirmed.id };
+      }
+      // 兼容旧结构：原来的 updateAgent 调用以 result 收尾，这里保持后续逻辑
+      const legacyResult = result;
       const sessionKey = `agent:${params.agentId}:${this.options.channelId}:direct:${params.userId.toLowerCase()}`;
       await this.handleUpdateSessionModel({
         sessionKey,
         provider: provider,
         model: params.model
       })
-      return { id: result.agentId };
+      return { id: legacyResult.agentId };
     }
     //不存在直接创建一个
     const p = {
