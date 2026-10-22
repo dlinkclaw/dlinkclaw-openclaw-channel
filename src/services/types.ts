@@ -472,6 +472,8 @@ export type EventType =
   | 'onSkillError'
   | 'onPairingRequest'
   | 'onPairingResult'
+  /** 2026-10-22：周期上报 token 用量 */
+  | 'onUsage'
   | 'onTerminal'
 
 

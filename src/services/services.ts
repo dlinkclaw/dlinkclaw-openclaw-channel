@@ -42,14 +42,50 @@ export class ClawServices extends EventEmitter {
   private readonly logger: PluginLogger;
   // 2026-10-21：终端会话管理（PTY / 管道）
   private readonly terminalManager: TerminalManager;
-  constructor(options: ClawServiceOptions, logger: PluginLogger, terminalSink?: TerminalDataSink) {
+  /** 2026-10-22：token 用量上报（中继落库，按同事聚合） */
+  private readonly usagePublisher?: (payload: Record<string, unknown>) => void;
+  private usageTimer: NodeJS.Timeout | null = null;
+  constructor(options: ClawServiceOptions, logger: PluginLogger, terminalSink?: TerminalDataSink, usagePublisher?: (payload: Record<string, unknown>) => void) {
     super();
     this.options = options;
     this.logger = logger;
+    this.usagePublisher = usagePublisher;
     this.terminalManager = new TerminalManager(
       terminalSink ?? (() => { }),
       (msg, type) => this.log(msg, (type as any) ?? 'info'),
     );
+  }
+
+  /** 2026-10-22：每 60 秒把最近一天的 token 用量上报中继（幂等 upsert） */
+  private startUsageReporter() {
+    if (this.usageTimer || !this.usagePublisher) {
+      return;
+    }
+    const tick = async () => {
+      try {
+        const usageDate = new Date().toISOString().slice(0, 10);
+        const res = await this.rpcWithTimeout(
+          this.client!.getSessionsUsage({ agentScope: 'all', startDate: usageDate, endDate: usageDate, limit: 1000 }),
+          15000,
+          'sessions.usage',
+        );
+        const root: any = (res as any)?.data ?? res;
+        const sessions: Array<unknown> = Array.isArray(root?.sessions)
+          ? root.sessions
+          : Array.isArray(root?.aggregates)
+            ? root.aggregates
+            : [];
+        if (sessions.length === 0) {
+          return;
+        }
+        // relayId 由中继按 apiKey 补齐，这里不传
+        this.usagePublisher!({ usageDate, sessions });
+      } catch (e) {
+        this.log(`usage reporter: ${String(e)}`, 'debug');
+      }
+    };
+    this.usageTimer = setInterval(() => { void tick(); }, 60_000);
+    void tick();
   }
 
   log(msg: string, type: 'info' | 'warn' | 'error' | 'debug') {
@@ -131,6 +167,8 @@ export class ClawServices extends EventEmitter {
 
       await this.client.connect();
       this.isInitialized = true;
+      // 2026-10-22：启动后开始周期上报用量
+      this.startUsageReporter();
 
       return true;
     } catch (error) {

@@ -29,6 +29,9 @@ export class CmdHandler {
     // 2026-10-21：终端输出经 MQTT 事件回推客户端（协议级能力，品牌无关）
     this.services = new ClawServices(config, logger, (sessionId, data) => {
       void this.dlClient.publishEventToDLClient({ sessionId, data }, 'onTerminal');
+    }, (payload) => {
+      // 2026-10-22：用量上报走服务端事件，由中继落库
+      void this.dlClient.publishEventToServer(payload, 'onUsage', '1');
     });
   }
 
