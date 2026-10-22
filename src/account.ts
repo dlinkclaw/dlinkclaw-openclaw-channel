@@ -178,7 +178,7 @@ export function checkConfigured(config: DLConfig) {
  * 1. npm install qrcode-terminal
  * 2. 取消顶部 import qrcode 的注释
  * 3. 取消底部 qrcode.generate 的注释
- * 4. 替换 registerUrl 为沃联实际注册地址
+ * 4. 替换 registerUrl 为朵联实际注册地址
  */
 function getDLIntroLines(registerUrl: string): string[] {
     const lines: string[] = [
@@ -197,7 +197,7 @@ function getDLIntroLines(registerUrl: string): string[] {
     // }
     
     lines.push(
-        "📱 扫码或在浏览器打开以下链接注册沃联账号：",
+        "📱 扫码或在浏览器打开以下链接注册朵联账号：",
         registerUrl,
         "",
         "━━━ 方式二：已有 APIKEY ━━━",
@@ -210,6 +210,8 @@ function getDLIntroLines(registerUrl: string): string[] {
 export function dlSetupWizard(channelId: string): ChannelPluginSetupWizard {
     return {
         channel: channelId,
+        // 2026-10-22：先输入 BaseUrl（textInputs），再输入 API Key / Secret（credentials）
+        stepOrder: "text-first",
         status: {
             configuredLabel: "已配置 ✓",
             unconfiguredLabel: "需要 baseUrl, APIKey 和 Secret",
@@ -221,11 +223,11 @@ export function dlSetupWizard(channelId: string): ChannelPluginSetupWizard {
                 return configured;
             },
             resolveStatusLines: ({ configured }) => {
-                return [`沃联 WorkRelay: ${configured ? "已配置" : "需要 baseUrl, APIKey 和 Secret"}`];
+                return [`朵联 WorkRelay: ${configured ? "已配置" : "需要 baseUrl, APIKey 和 Secret"}`];
             },
         },
         introNote: {
-            title: "🔧 沃联 WorkRelay 设置向导",
+            title: "🔧 朵联 WorkRelay 设置向导",
             lines: getDLIntroLines(
                 process.env.DL_REGISTER_URL || "https://WorkRelay.cn/register"
             ),
@@ -236,31 +238,12 @@ export function dlSetupWizard(channelId: string): ChannelPluginSetupWizard {
         },
         credentials: [
             {
-                inputKey: "url",
-                providerHint: "沃联回调地址 (BaseUrl)",
-                credentialLabel: "BaseUrl",
-                envPrompt: "使用环境变量中的 DL_BASEURL?",
-                keepPrompt: "BaseUrl 已配置，保留当前值？",
-                inputPrompt: "请输入沃联回调地址 (BaseUrl):",
-                inspect: ({ cfg, accountId }) => {
-                    const account = resolveDLAccount({ cfg, accountId }, channelId);
-                    const hasValue = Boolean(account.config.baseUrl?.trim());
-                    return {
-                        accountConfigured: hasValue,
-                        hasConfiguredValue: hasValue,
-                        resolvedValue: account.config.baseUrl || undefined,
-                    };
-                },
-                applySet: ({ cfg, accountId, resolvedValue }) =>
-                    setDLChannelAccountParamsValue({ cfg, accountId, 'param': 'baseUrl', value: resolvedValue }, channelId)
-            },
-            {
                 inputKey: "token",
-                providerHint: "沃联 API Key",
+                providerHint: "朵联 API Key",
                 credentialLabel: "API Key",
                 envPrompt: "使用环境变量中的 DL_APIKEY?",
                 keepPrompt: "API Key 已配置，保留当前值？",
-                inputPrompt: "请输入沃联 API Key:",
+                inputPrompt: "请输入朵联 API Key:",
                 inspect: ({ cfg, accountId }) => {
                     const account = resolveDLAccount({ cfg, accountId }, channelId);
                     const hasValue = Boolean(account.config.apiKey?.trim());
@@ -275,11 +258,11 @@ export function dlSetupWizard(channelId: string): ChannelPluginSetupWizard {
             },
             {
                 inputKey: "privateKey",
-                providerHint: "沃联签名密钥 (Secret)",
+                providerHint: "朵联签名密钥 (Secret)",
                 credentialLabel: "Secret",
                 envPrompt: "使用环境变量中的 DL_SECRET?",
                 keepPrompt: "Secret 已配置，保留当前值？",
-                inputPrompt: "请输入沃联签名密钥 (Secret):",
+                inputPrompt: "请输入朵联签名密钥 (Secret):",
                 inspect: ({ cfg, accountId }) => {
                     const account = resolveDLAccount({ cfg, accountId }, channelId);
                     const hasValue = Boolean(account.config.secret?.trim());
@@ -292,7 +275,22 @@ export function dlSetupWizard(channelId: string): ChannelPluginSetupWizard {
                 applySet: ({ cfg, accountId, resolvedValue }) =>
                     setDLChannelAccountParamsValue({ cfg, accountId, 'param': 'secret', value: resolvedValue }, channelId)
             },
-        ]
+        ],
+        // 2026-10-22：BaseUrl 不是密钥，必须放 textInputs；放 credentials 会被向导掩码成 ***
+        textInputs: [
+            {
+                inputKey: "url",
+                message: "请输入朵联回调地址 (BaseUrl):",
+                placeholder: "https://your-dlink-server.example.com",
+                required: true,
+                currentValue: ({ cfg, accountId }) => {
+                    const account = resolveDLAccount({ cfg, accountId }, channelId);
+                    return account.config.baseUrl?.trim() || undefined;
+                },
+                applySet: ({ cfg, accountId, value }) =>
+                    setDLChannelAccountParamsValue({ cfg, accountId, 'param': 'baseUrl', value }, channelId),
+            },
+        ],
     };
 }
 
@@ -376,7 +374,7 @@ export function dlAccountStatus(channelId: string): ChannelStatusAdapter<DLResol
                         channel: channelId,
                         accountId,
                         kind: "config",
-                        message: "沃联 baseUrl, apiKey, secret 未配置",
+                        message: "朵联 baseUrl, apiKey, secret 未配置",
                         fix: `Run: openclaw channels add ${channelId} --base-url <baseUrl> --apiKey <apiKey> --secret <secret>`,
                     });
                 }

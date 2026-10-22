@@ -26,6 +26,7 @@ import { getSessionEntry, patchSessionEntry, resolveStorePath, listSessionEntrie
 import { setGatewayClient, approvePairingRequest } from './gateway-rpc.js';
 import { DEFAULT_ACCOUNT_ID } from 'openclaw/plugin-sdk/core';
 import { markRunStopped } from '../runtime.js';
+import { flushPendingMessages } from '../pending-pairing.js';
 import { TerminalManager, TerminalDataSink } from './terminal.js';
 
 
@@ -319,9 +320,9 @@ export class ClawServices extends EventEmitter {
         case 'pairing.approve':
           // 2026-09-06 适配 openclaw 2026.9.1：审批改按 requestId（宿主 RPC），客户端由 onPairingRequest 事件获取；
           // code 保留解析用于旧客户端兼容提示（9.1 起宿主 list 不再暴露 code，无法按 code 审批）
-          const { requestId, code, empId, accountId } = cmdMessage.params ?? {};
+          const { requestId, code, empId, accountId, relayId } = cmdMessage.params ?? {};
           //注意：accountId目前只能为 DEFAULT_ACCOUNT_ID, 本插件不需要使用多账户,服务端提供多帐户服务(openId提供AGENT路由),在安装插件时需提醒使用"default"
-          result = await this.handleApprove({ requestId, code, empId, accountId: accountId || DEFAULT_ACCOUNT_ID })
+          result = await this.handleApprove({ requestId, code, empId, relayId, accountId: accountId || DEFAULT_ACCOUNT_ID })
           break;
 
         // 工作区 / Artifact
@@ -1045,8 +1046,8 @@ export class ClawServices extends EventEmitter {
    * - notify=false：不触发宿主 notifyApproval（其内部 dlClient.approved 走 HTTP /guest/relayBot/approved，
    *   服务端暂无该端点会 404 噪音）；服务端回调沿用下方 onPairingResult MQTT 事件（7.1 同款链路）
    */
-  private async handleApprove(params: { requestId?: string, code?: string, empId?: string, accountId: string }) {
-    const { requestId, code, empId, accountId } = params;
+  private async handleApprove(params: { requestId?: string, code?: string, empId?: string, accountId: string, relayId?: string }) {
+    const { requestId, code, empId, accountId, relayId } = params;
     if (!requestId) {
       // 旧客户端只传 code：9.1 无公开按 code 审批 API，提示升级（重新对码后事件会带 requestId）
       throw new Error(`审批失败:缺少 requestId${code ? `（code=${code} 已不被支持）` : ''}，请重新触发对码后重试`);
@@ -1059,10 +1060,13 @@ export class ClawServices extends EventEmitter {
         empId,
         requestId,
       })
+      // 2026-10-22：补发该中继在未配对期间被拦截的消息；返回条数供客户端决定是否兜底重发
+      const replayed = relayId ? flushPendingMessages(relayId) : 0;
       return {
         success: true,
         data: {
-          ...res
+          ...res,
+          replayed
         },
         timestamp: Date.now()
       }

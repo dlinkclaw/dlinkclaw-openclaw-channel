@@ -6,6 +6,7 @@ import { getDLLogger, getDLRuntime } from "./runtime.js";
 import { DLClient, DLMessageContext } from "./client/dl-client.js";
 import { DLResolvedAccount } from "./client/types.js";
 import { checkDmPolicy, checkGroupPolicy } from "./policy.js";
+import { bufferPendingMessage } from "./pending-pairing.js";
 import { buildMessageContext, parseMessageContent, routeAndDispatchMessage } from "./client/message.js";
 import { withTimeout } from "./client/timeout.js";
 import { getDLClient, removeDLClient, setDLClient } from "./client/client-manager.js";
@@ -215,6 +216,12 @@ async function duolinkMessageHandler(dlCtx: DLMessageContext, client: DLClient) 
     })
 
     if (!dmPolicy.allowed) {
+        // 2026-10-22：首次未配对时原消息会被配对码回复取代而丢失，这里暂存，
+        // 由 pairing.approve 审批通过后补发（见 services.ts handleApprove）。
+        if (dmPolicy.pendingPairing) {
+            bufferPendingMessage(relayId, () => duolinkMessageHandler(dlCtx, client));
+            logger.info(`${accountLogInfo} message buffered until pairing approved, relayId=${relayId}`);
+        }
         client.publishToServer(
             {
                 streamId: msg.streamId,

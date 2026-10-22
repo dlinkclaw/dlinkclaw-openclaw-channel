@@ -15,6 +15,8 @@ export type DLGroupPolicyCheckResult = {
 export type DmPolicyCheckResult = {
     allowed: boolean;
     allowFrom?: Array<string | number>
+    /** 2026-10-22：因未配对被拦截（消息可暂存，配对后补发） */
+    pendingPairing?: boolean;
 }
 
 /**
@@ -245,7 +247,8 @@ export async function checkDmPolicy(params: {
         );
     }
     logger.warn(`account[${account.accountId}] sender=${senderId} access denied`)
-    return { allowed: false };
+    // 2026-10-22：pairing 模式下拦截的消息可暂存，审批通过后补发
+    return { allowed: false, pendingPairing: dmPolicy === "pairing" };
 }
 
 
