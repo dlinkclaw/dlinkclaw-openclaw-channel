@@ -63,9 +63,14 @@ export class ClawServices extends EventEmitter {
     }
     const tick = async () => {
       try {
-        const usageDate = new Date().toISOString().slice(0, 10);
+        // 2026-10-23：上送绝对时间 + 本机时区，业务日由中继按部署时区归并；
+        // 查询窗口取近 48 小时，避免跨日/跨时区边界漏会话（窗口仅用于取数）
+        const capturedAt = Date.now();
+        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const endDate = new Date().toISOString().slice(0, 10);
+        const startDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
         const res = await this.rpcWithTimeout(
-          this.client!.getSessionsUsage({ agentScope: 'all', startDate: usageDate, endDate: usageDate, limit: 1000 }),
+          this.client!.getSessionsUsage({ agentScope: 'all', startDate, endDate, limit: 1000 }),
           15000,
           'sessions.usage',
         );
@@ -79,7 +84,7 @@ export class ClawServices extends EventEmitter {
           return;
         }
         // relayId 由中继按 apiKey 补齐，这里不传
-        this.usagePublisher!({ usageDate, sessions });
+        this.usagePublisher!({ usageDate: endDate, capturedAt, timeZone, sessions });
       } catch (e) {
         this.log(`usage reporter: ${String(e)}`, 'debug');
       }
