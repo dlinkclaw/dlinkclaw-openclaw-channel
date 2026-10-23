@@ -126,6 +126,10 @@ export class CmdHandler {
         try {
           const sessionKey = payload.sessionKey;
           const message = payload.message;
+          // 2026-10-23：message 可能缺失
+          if (!message) {
+            return;
+          }
           const role = message.role;
           if (role !== 'assistant') {
             return;
@@ -134,7 +138,11 @@ export class CmdHandler {
           //this.log(`onSessionMessage >>> ${JSON.stringify(payload)}`, 'warn');
 
           const stopReason = message.stopReason;
-          const content: any[] = message.content ?? [];
+          // 2026-10-23：content 可能是字符串（非数组），直接 .map 会 TypeError
+          const rawContent = message.content;
+          const content: any[] = Array.isArray(rawContent)
+            ? rawContent
+            : (typeof rawContent === 'string' ? [{ type: 'text', text: rawContent }] : []);
           const result_contents: Array<string> = content.map(item => {
             if (item.type === 'thinking') {
               return item.thinking;
@@ -148,7 +156,8 @@ export class CmdHandler {
             if(content.length === 0){
               return;
             }
-            const label: string | undefined = payload.origin.label || undefined;
+            // 2026-10-23：origin 可能为空，直接取 .label 会 TypeError
+            const label: string | undefined = payload.origin?.label || undefined;
             if (!label) {
               this.log(`不能StreamId...${label}`, 'error');
               this.dlClient.publishEventToServer({
