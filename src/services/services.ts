@@ -346,6 +346,10 @@ export class ClawServices extends EventEmitter {
           // 新增 cmd 通道 chat.abort ， 以上两个/stop, /queue interrupt都不能立即终止执行中的会话
           result = await this.handlChatAbout(cmdMessage.params!);
           break;
+        case 'sessions.abort':
+          // 2026-10-24：会话级中止，无 runId 时也能立即停止，并丢弃排队后续
+          result = await this.handleSessionsAbort(cmdMessage.params!);
+          break;
         // 2026-10-21：终端能力（owner-only，见 CmdHandler 校验）
         case 'terminal.open':
           result = await this.terminalManager.open(cmdMessage.params as any);
@@ -486,11 +490,12 @@ export class ClawServices extends EventEmitter {
    * 策略：先精确匹配传入 key；查不到 entry 时，用前缀匹配 store 中 updatedAt 最新的 direct 会话。
    */
   private resolveDirectSessionKey(storePath: string, sessionKey: string, agentId: string, channelId: string): string {
-    // 1. 传入 key 直接命中 entry → 直接用
+    // 1. 精确匹配先记下来，但不直接返回：旧的无后缀 key 可能仍存在，
+    //    直接写入会命中过期会话（表现为「切了模型但下一条消息仍用旧模型」）。
     const exact = getSessionEntry({ storePath, sessionKey });
-    if (exact) {
-      return sessionKey;
-    }
+    const exactUpdated = exact
+      ? Number((exact as any).updatedAt ?? (exact as any).lastActivityAt ?? 0)
+      : -1;
     // 2. 前缀匹配：agent:<agentId>:<channelId>:direct:<...> 开头的最新会话
     const prefix = `agent:${agentId}:${channelId}:direct:`;
     try {
@@ -505,8 +510,9 @@ export class ClawServices extends EventEmitter {
           bestKey = s.sessionKey;
         }
       }
-      if (bestKey) {
-        this.log(`resolveDirectSessionKey: ${sessionKey} -> ${bestKey} (前缀匹配最新会话)`, 'info');
+      // 3. 谁更新得更晚就用谁：避免旧 exact 会话把模型覆盖写丢
+      if (bestKey && bestUpdated > exactUpdated) {
+        this.log(`resolveDirectSessionKey: ${sessionKey} -> ${bestKey} (更晚更新的会话)`, 'info');
         return bestKey;
       }
     } catch (e) {
@@ -1064,6 +1070,14 @@ export class ClawServices extends EventEmitter {
     return await this.client?.stopSession({
       sessionKey
     });
+  }
+
+  private async handleSessionsAbort(params: Record<string, any>): Promise<any> {
+    const { sessionKey } = params;
+    if (!sessionKey) {
+      throw new Error('sessions.abort 缺少 sessionKey 参数');
+    }
+    return await this.client?.sessionsAbort({ sessionKey });
   }
 
   private async handlChatAbout(params: Record<string, any>): Promise<void> {

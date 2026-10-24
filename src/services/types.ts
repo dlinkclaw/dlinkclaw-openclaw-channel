@@ -396,6 +396,7 @@ export type CmdType =
   | 'sessions.reset'
   | 'sessions.patch'
   | 'sessions.currentModel'
+  | 'sessions.abort'
 
   // 2026-10-21：终端能力（品牌中立协议，owner-only）
   | 'terminal.open'

@@ -543,15 +543,25 @@ export class WSClient extends EventEmitter {
     });
   }
 
-  async chatAbort(params: { sessionKey: string, runId: string }) {
+  async chatAbort(params: { sessionKey: string, runId?: string }) {
     const { sessionKey, runId } = params
     return this.sendRequest({
       type: 'req',
       method: 'chat.abort',
       params: {
         sessionKey,
-        runId
+        ...(runId ? { runId } : {})
       }
+    });
+  }
+
+  /** 2026-10-24：会话级中止（无 runId 时使用），同时丢弃排队后续 */
+  async sessionsAbort(params: { sessionKey: string }) {
+    const { sessionKey } = params
+    return this.sendRequest({
+      type: 'req',
+      method: 'sessions.abort',
+      params: { sessionKey }
     });
   }
 
