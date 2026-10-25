@@ -1,6 +1,6 @@
 {
   "name": "dlinkclaw-openclaw",
-  "version": "2026.10.21",
+  "version": "2026.10.22",
   "description": "DLinkClaw OpenClaw channel plugin — 朵联 OpenClaw 接入通道",
   "keywords": [
     "DLinkClaw",
@@ -92,5 +92,8 @@
   "homepage": "https://github.com/dlinkclaw/dlinkclaw-openclaw-channel#readme",
   "bugs": {
     "url": "https://github.com/dlinkclaw/dlinkclaw-openclaw-channel/issues"
+  },
+  "optionalDependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.15"
   }
 }
