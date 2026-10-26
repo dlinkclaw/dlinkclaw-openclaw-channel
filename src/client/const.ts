@@ -34,6 +34,8 @@ export const REPLY_SEND_TIMEOUT_MS = 15_000;
  * 主动回复API
  */
 export const AUTO_RELAY_API = '/guest/relayBot/sendNotification';
+// 2026-10-26 人设注入：按 sessionKey 拉取 agent 人格与生效约定
+export const AUTO_RELAY_PERSONA = '/guest/relayBot/persona';
 export const AUTO_RELAY_UPLOAD = "/guest/relayBot/uploadMediaFiles";
 
 // ====== 上传文件配置常量（根据服务器性能调整）=======

@@ -6,6 +6,7 @@ import { MEDIA_DOCUMENT_PLACEHOLDER, MEDIA_IMAGE_PLACEHOLDER, MEDIA_VIDEO_PLACEH
 import { md5 } from "./crypto.js";
 import { createChannelHistoryWindow, HistoryEntry } from "openclaw/plugin-sdk/reply-history";
 import { buildChannelInboundEventContext, InboundMediaFacts } from "openclaw/plugin-sdk/channel-inbound";
+import { beginPersonaScope, endPersonaScope } from "../persona.js";
 import { uuidStr } from "../utils.js";
 import { ChatType } from "openclaw/plugin-sdk/core";
 
@@ -1118,8 +1119,10 @@ export async function routeAndDispatchMessage(ctx: {
   commandAuthorized?: boolean
   chatOpts?: AutoReplyOpts
   logger: PluginLogger
+  // 2026-10-26 人设注入：本次分发命中的 relay agent 主键（群聊用它区分被 @ 的 agent）
+  personaAgentId?: string
 }): Promise<void> {
-  const { ctxPayload, core, cfg, client, accountId, streamId, accStatus, commandAuthorized, chatOpts, logger } = ctx;
+  const { ctxPayload, core, cfg, client, accountId, streamId, accStatus, commandAuthorized, chatOpts, logger, personaAgentId } = ctx;
   if (!commandAuthorized) {
     await client.publishProcessingState({
       streamId,
@@ -1130,6 +1133,13 @@ export async function routeAndDispatchMessage(ctx: {
   }
   try {
     const ctx = await ctxPayload;
+    // 2026-10-26 群聊人设作用域：分发期间绑定被 @ 的 agent，整轮（含工具循环）都能读到正确值
+    // 2026-10-26 OpenClaw 的消息上下文字段名是 SessionKey（大写），兼容两种写法
+    const personaScopeKey = (((ctx as any).SessionKey ?? (ctx as any).sessionKey) || '') as string;
+    logger.debug?.(`persona scope: session=${personaScopeKey} agent=${personaAgentId ?? '-'}`);
+    if (personaAgentId) {
+      beginPersonaScope(personaScopeKey, personaAgentId);
+    }
     const mediaFiles: Array<string> = []
     await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
       ctx,
@@ -1173,6 +1183,9 @@ export async function routeAndDispatchMessage(ctx: {
           }
         },
         onSettled: async () => {
+          if (personaAgentId) {
+            endPersonaScope(personaScopeKey, personaAgentId);
+          }
           if ((accStatus.accumulatedPayload && accStatus.accumulatedPayload.length > 0) || mediaFiles.length > 0) {
             //发送结束状态
             await client.publishProcessingState({
@@ -1192,6 +1205,9 @@ export async function routeAndDispatchMessage(ctx: {
           }
         },
         onError: async (err, info) => {
+          if (personaAgentId) {
+            endPersonaScope(personaScopeKey, personaAgentId);
+          }
           const errorStr = String(err);
           await client.publishProcessingState({
             streamId,

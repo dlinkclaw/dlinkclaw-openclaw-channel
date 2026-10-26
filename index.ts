@@ -3,6 +3,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk/core";
 import { channelMeta, dlChannel, LOG_TAG } from "./src/channel.js";
 import { setDLLogger, setDLRuntime, isRunStopped } from "./src/runtime.js";
+import { loadPersonaBlock, currentPersonaAgent } from "./src/persona.js";
 
 const meta = channelMeta;
 // 2026-10-19：调试开关改为环境变量控制，不再依赖 package.json 的 isDebug（发布时容易忘改）。
@@ -47,20 +48,29 @@ const plugin = {
         // 铁律：1.歧义先问 2.失败即停 3.完成必报（发媒体后必须补文字确认，客户端靠它停止转圈）。
         // 只对 dlink 通道注入，避免影响其他通道的 agent。
         // 注：用 api.on 注册类型化钩子（registerHook 是单参数内部签名，无法返回提示注入）。
-        api.on('before_prompt_build', (_event, ctx) => {
+        api.on('before_prompt_build', async (_event, ctx) => {
             const channelId = meta.id;
-            api.logger.warn(`ctx.channel=${ctx.channel}, ctx.channelId=${ctx.channelId}, channelId=${channelId}`)
             if (ctx.channel !== channelId && ctx.channelId !== channelId) {
                 return;
             }
-            return {
-                prependSystemContext: [
+            const parts = [
                     '[AGENT CODE OF CONDUCT - ALWAYS FOLLOW]',
                     '1. ASK BEFORE GUESSING: If the task is incomplete or has multiple reasonable interpretations, send a one-line confirmation first. Never guess.',
                     '2. STOP ON FAILURE: If the same problem fails 2-3 times in a row, stop and report: "I am stuck: <reason>. Please advise." Never retry endlessly.',
                     '3. ALWAYS REPORT COMPLETION: Every task must end with a completion signal. After sending media/files, always follow up with a short text confirmation (e.g. "✅ Sent 3 files: a.png / b.pdf / c.txt"). The client shows a spinner until it receives the final text reply.',
-                ].join('\n')
-            };
+                    // 2026-10-26 语言跟随：过程文本与最终回复都使用用户当前消息的语言，不写死英文
+                    '4. LANGUAGE: write your reply AND any intermediate/progress text (tool narration, status lines, preamble) in the same language as the user\'s latest message. Never default to English when the user writes in another language.',
+            ];
+            // 2026-10-26 人设注入：按 sessionKey 拉取该 agent 的人格与生效约定，失败则不注入
+            const personaAgentId = currentPersonaAgent(ctx.sessionKey);
+            if (!personaAgentId && String(ctx.sessionKey ?? '').includes(':group:')) {
+                api.logger.warn(`persona group scope missing: session=${ctx.sessionKey}`);
+            }
+            const personaBlock = await loadPersonaBlock(ctx.sessionKey, personaAgentId);
+            if (personaBlock) {
+                parts.push(personaBlock);
+            }
+            return { prependSystemContext: parts.join('\n\n') };
         });
     }
 };

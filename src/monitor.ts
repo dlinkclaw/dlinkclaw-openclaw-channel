@@ -372,6 +372,8 @@ async function duolinkMessageHandler(dlCtx: DLMessageContext, client: DLClient) 
             channelId,
             accountId: account.accountId,
             streamId: msg.streamId,
+            // 2026-10-26 人设注入：把本次消息命中的 relay agent 传给分发器
+            personaAgentId: msg.toAgent?.id,
             accStatus,
             chatOpts: {
                 toAgent:msg.toAgent,

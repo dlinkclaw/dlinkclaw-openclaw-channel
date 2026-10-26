@@ -7,7 +7,7 @@ import { BotType, DLArchiveSession, DLKind, DLMessage, DLMessagePayload, DLResol
 import mqtt from 'mqtt';
 import { DLHttp } from './dl-http.js';
 import { decryptAesEcbPkcs5 } from './crypto.js';
-import { AUTO_RELAY_API, AUTO_RELAY_UPLOAD } from './const.js';
+import { AUTO_RELAY_API, AUTO_RELAY_PERSONA, AUTO_RELAY_UPLOAD } from './const.js';
 import { CmdHandler, createCmdHandler } from '../services/index.js';
 import { CmdMessage, CmdResponse, CmdResult, EventType } from '../services/types.js';
 import { uuidStr } from '../utils.js';
@@ -88,6 +88,24 @@ export class DLClient extends EventEmitter {
                 token,
                 baseUrl: this.ctx.account.config.baseUrl
             }, this, this.logger)
+        }
+    }
+
+    /**
+     * 2026-10-26：拉取当前会话所属 agent 的人格与生效约定（人设注入用）。
+     * 失败返回 null，调用方降级为不注入，不影响正常对话。
+     */
+    async fetchPersona(sessionKey: string, agentId?: string): Promise<any | null> {
+        try {
+            const body: Record<string, string> = { sessionKey };
+            if (agentId) {
+                body.agentId = agentId;
+            }
+            const data = await this.http.post<any>(AUTO_RELAY_PERSONA, body);
+            return data ?? null;
+        } catch (e) {
+            this.logger.warn(`fetchPersona failed: ${e}`);
+            return null;
         }
     }
 
