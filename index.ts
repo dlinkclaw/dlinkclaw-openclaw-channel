@@ -58,8 +58,8 @@ const plugin = {
                     '1. ASK BEFORE GUESSING: If the task is incomplete or has multiple reasonable interpretations, send a one-line confirmation first. Never guess.',
                     '2. STOP ON FAILURE: If the same problem fails 2-3 times in a row, stop and report: "I am stuck: <reason>. Please advise." Never retry endlessly.',
                     '3. ALWAYS REPORT COMPLETION: Every task must end with a completion signal. After sending media/files, always follow up with a short text confirmation (e.g. "✅ Sent 3 files: a.png / b.pdf / c.txt"). The client shows a spinner until it receives the final text reply.',
-                    // 2026-10-26 语言跟随：过程文本与最终回复都使用用户当前消息的语言，不写死英文
-                    '4. LANGUAGE: write your reply AND any intermediate/progress text (tool narration, status lines, preamble) in the same language as the user\'s latest message. Never default to English when the user writes in another language.',
+                    // 2026-10-27 语言跟随：回复、过程文本、推理思考都使用用户当前消息的语言，不写死英文
+                    '4. LANGUAGE: write your reply, any intermediate/progress text (tool narration, status lines, preamble), AND your reasoning/thinking in the same language as the user\'s latest message. Never default to English when the user writes in another language.',
             ];
             // 2026-10-26 人设注入：按 sessionKey 拉取该 agent 的人格与生效约定，失败则不注入
             const personaAgentId = currentPersonaAgent(ctx.sessionKey);

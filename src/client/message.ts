@@ -1131,16 +1131,55 @@ export async function routeAndDispatchMessage(ctx: {
       kind: 'in_process'
     })
   }
+  // 2026-10-27 terminal guard: hoisted so the finally block can always settle the stream
+    const mediaFiles: Array<string> = []
+    // 2026-10-27 terminal guard: normal end, empty reply, abort and error must all send finish=true exactly once.
+    // Otherwise client runState.status.finish stays false and the UI spins forever.
+    let terminalSent = false
+    let scopeEnded = false
+    let personaScopeKey = ''
+    const endScopeOnce = () => {
+      if (scopeEnded) {
+        return
+      }
+      scopeEnded = true
+      if (personaAgentId) {
+        endPersonaScope(personaScopeKey, personaAgentId)
+      }
+    }
+    // send terminal state once; tag_status_completed is parsed as a state message, not a chat bubble
+    const settleOnce = async (content: string, kind: DLKind = 'block') => {
+      if (terminalSent) {
+        return
+      }
+      terminalSent = true
+      try {
+        await client.publishProcessingState({
+          streamId,
+          content: '[tag_status_completed]',
+          status: 'read',
+          kind: 'in_process'
+        })
+      } catch (e) {
+        logger.warn?.(`account[${accountId}] publish terminal status failed: ${String(e)}`)
+      }
+      try {
+        if (messageAccumulators.has(streamId)) {
+          await client.publishToServer({ streamId, content, finish: true, kind, mediaFiles }, chatOpts)
+        }
+      } catch (e) {
+        logger.error(`account[${accountId}] publish terminal reply failed: ${String(e)}`)
+      }
+    }
   try {
     const ctx = await ctxPayload;
     // 2026-10-26 群聊人设作用域：分发期间绑定被 @ 的 agent，整轮（含工具循环）都能读到正确值
     // 2026-10-26 OpenClaw 的消息上下文字段名是 SessionKey（大写），兼容两种写法
-    const personaScopeKey = (((ctx as any).SessionKey ?? (ctx as any).sessionKey) || '') as string;
+    personaScopeKey = (((ctx as any).SessionKey ?? (ctx as any).sessionKey) || '') as string;
     logger.debug?.(`persona scope: session=${personaScopeKey} agent=${personaAgentId ?? '-'}`);
     if (personaAgentId) {
       beginPersonaScope(personaScopeKey, personaAgentId);
     }
-    const mediaFiles: Array<string> = []
     await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
       ctx,
       cfg,
@@ -1183,9 +1222,7 @@ export async function routeAndDispatchMessage(ctx: {
           }
         },
         onSettled: async () => {
-          if (personaAgentId) {
-            endPersonaScope(personaScopeKey, personaAgentId);
-          }
+          endScopeOnce();
           if ((accStatus.accumulatedPayload && accStatus.accumulatedPayload.length > 0) || mediaFiles.length > 0) {
             //发送结束状态
             await client.publishProcessingState({
@@ -1195,6 +1232,7 @@ export async function routeAndDispatchMessage(ctx: {
               kind: 'in_process'
             })
             //处理完成整体回复
+            terminalSent = true
             await client.publishToServer({
               streamId,
               content: accStatus.accumulatedPayload,
@@ -1202,12 +1240,13 @@ export async function routeAndDispatchMessage(ctx: {
               kind: 'block',
               mediaFiles
             }, chatOpts);
+          } else {
+            // 2026-10-27 空回复（含被中止、模型未产出正文）也必须收尾，否则客户端一直转圈
+            await settleOnce('[tag_status_completed]')
           }
         },
         onError: async (err, info) => {
-          if (personaAgentId) {
-            endPersonaScope(personaScopeKey, personaAgentId);
-          }
+          endScopeOnce();
           const errorStr = String(err);
           await client.publishProcessingState({
             streamId,
@@ -1215,7 +1254,10 @@ export async function routeAndDispatchMessage(ctx: {
             status: 'read',
             kind: 'in_process'
           })
-          client.publishToServer({
+          if (info.kind === 'final') {
+            terminalSent = true
+          }
+          await client.publishToServer({
             streamId,
             content: `[tag_error_pross]\n${errorStr}`,
             finish: info.kind === 'final',
@@ -1411,5 +1453,11 @@ export async function routeAndDispatchMessage(ctx: {
       finish: true,
       kind: 'block'
     }, chatOpts);
+  } finally {
+    // 2026-10-27 abort 兜底：dispatch 正常返回但没走 onSettled，或异常被上层吞掉，都补发一次终态
+    endScopeOnce()
+    if (!terminalSent) {
+      await settleOnce('[tag_status_completed]')
+    }
   }
 }
