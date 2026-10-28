@@ -372,6 +372,12 @@ export type CmdType =
   | 'agent.get'
   | 'agent.stop'
   | 'chat.abort'
+  // 2026-10-27 能力协议（品牌无关）
+  | 'agent.capabilities'
+  | 'permissions.get'
+  | 'permissions.set'
+  | 'approvals.pending'
+  | 'approvals.resolve'
 
   | 'task.list'
   | 'task.create'
@@ -457,6 +463,7 @@ export interface ClawMessage {
 }
 
 export type EventType =
+  | 'onApproval'
   | 'onTick'
   | 'onHealth'
   | 'onHandshaked'

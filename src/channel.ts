@@ -9,6 +9,7 @@ import { formatPairingApproveHint } from "openclaw/plugin-sdk/core";
 import { ChannelResolveResult } from "openclaw/plugin-sdk/channel-contract";
 import { getDLLogger } from "./runtime.js";
 import { dlOutbound, dlPairing } from "./outbound.js";
+import { createDLApprovalCapability } from "./approval-native.js";
 
 export const channelMeta = pkg.openclaw.channel;
 export const LOG_TAG = channelMeta.selectionLabel;
@@ -148,6 +149,8 @@ export const dlChannel: ChannelPlugin<DLResolvedAccount> = {
   },
   pairing: dlPairing(channelId),
   outbound: dlOutbound(),
+  // 2026-10-27 原生审批投递：core 把请求交给插件，插件转交中继扇出
+  approvalCapability: createDLApprovalCapability(),
   gateway: {
     startAccount: async (ctx) => {
       ctx.setStatus({

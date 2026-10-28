@@ -555,13 +555,39 @@ export class WSClient extends EventEmitter {
     });
   }
 
+  /** 2026-10-27 审批决议：放行一次 / 永久放行 / 拒绝（网关 schema: id/kind/decision） */
+  async resolveApproval(params: { id: string, kind: 'exec' | 'plugin' | 'system-agent', decision: 'allow-once' | 'allow-always' | 'deny' }): Promise<any> {
+    return this.sendRequest({ type: 'req', method: 'approval.resolve', params })
+  }
+
+  /** 2026-10-27 读取生效执行策略：把「预设」解析成实际档位 */
+  async execApprovalsGet(): Promise<any> {
+    return this.sendRequest({ type: 'req', method: 'exec.approvals.get', params: {} })
+  }
+
+  /** 2026-10-27 审批队列（只读）：三类审批分别取列表，core 已做过期过滤 */
+  async approvalList(kind: 'exec' | 'plugin' | 'system-agent'): Promise<any> {
+    const method = kind === 'exec'
+      ? 'exec.approval.list'
+      : kind === 'plugin'
+        ? 'plugin.approval.list'
+        : 'openclaw.approval.list'
+    return this.sendRequest({ type: 'req', method, params: {} })
+  }
+
   /** 2026-10-24：会话级中止（无 runId 时使用），同时丢弃排队后续 */
-  async sessionsAbort(params: { sessionKey: string }) {
-    const { sessionKey } = params
+  async sessionsAbort(params: { sessionKey?: string, key?: string, runId?: string, clearQueued?: boolean }) {
+    // 2026-10-27 修正：sessions.abort 的参数字段是 key（不是 sessionKey），网关 schema 为 key/runId/agentId/clearQueued；
+    // clearQueued 丢弃排队后续，避免中止后不到一秒又被排队任务拉起。
+    const key = params.key ?? params.sessionKey
     return this.sendRequest({
       type: 'req',
       method: 'sessions.abort',
-      params: { sessionKey }
+      params: {
+        key,
+        clearQueued: params.clearQueued ?? true,
+        ...(params.runId ? { runId: params.runId } : {})
+      }
     });
   }
 

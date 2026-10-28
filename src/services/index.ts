@@ -32,6 +32,9 @@ export class CmdHandler {
     }, (payload) => {
       // 2026-10-22：用量上报走服务端事件，由中继落库
       void this.dlClient.publishEventToServer(payload, 'onUsage', '1');
+    }, (payload) => {
+      // 2026-10-27 审批待审推送：插件发现新条目即上报中继，中继再推审批人
+      void this.dlClient.publishEventToServer(payload, 'onApproval', '1');
     });
   }
 

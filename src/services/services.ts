@@ -18,6 +18,7 @@ import WSClient from './ws-client.js';
 // 2026-09-06 适配 openclaw 2026.9.1：根入口已移除，改从 core 导入
 import { PluginLogger } from 'openclaw/plugin-sdk/core';
 import { getOpenclawPath, getExtCapabilitiesDir } from '../utils.js';
+import { readEffectiveExecPreset } from '../exec-policy.js';
 import { applyModelOverrideToSessionEntry } from 'openclaw/plugin-sdk/model-session-runtime';
 // 2026-10-15 适配 openclaw 2026.10.3：config-runtime 子路径已被官方移除（2026-09-30 SDK owner 批准），
 // 下列符号现由 session-store-runtime 导出（同名、签名兼容：resolveStorePath/getSessionEntry/listSessionEntries 仍为同步，patchSessionEntry 为 async，调用处均已 await）
@@ -44,18 +45,69 @@ export class ClawServices extends EventEmitter {
   private readonly terminalManager: TerminalManager;
   /** 2026-10-22：token 用量上报（中继落库，按同事聚合） */
   private readonly usagePublisher?: (payload: Record<string, unknown>) => void;
+  // 2026-10-27 审批事件推送（插件 → 中继），本地轮询发现新待审即上报
+  private readonly approvalPublisher?: (payload: Record<string, unknown>) => void;
+  private approvalTimer: NodeJS.Timeout | null = null;
+  private readonly approvalSeen = new Set<string>();
   private usageTimer: NodeJS.Timeout | null = null;
-  constructor(options: ClawServiceOptions, logger: PluginLogger, terminalSink?: TerminalDataSink, usagePublisher?: (payload: Record<string, unknown>) => void) {
+  constructor(options: ClawServiceOptions, logger: PluginLogger, terminalSink?: TerminalDataSink, usagePublisher?: (payload: Record<string, unknown>) => void, approvalPublisher?: (payload: Record<string, unknown>) => void) {
     super();
     this.options = options;
     this.logger = logger;
     this.usagePublisher = usagePublisher;
+    this.approvalPublisher = approvalPublisher;
     this.terminalManager = new TerminalManager(
       terminalSink ?? (() => { }),
       (msg, type) => this.log(msg, (type as any) ?? 'info'),
     );
   }
 
+  /** 2026-10-27 每 10 秒本地查一次审批队列，出现新条目才推中继（推模式，非中继拉取） */
+  private startApprovalWatcher() {
+    if (this.approvalTimer || !this.approvalPublisher) {
+      return;
+    }
+    const tick = async () => {
+      try {
+        const publish = this.approvalPublisher;
+        if (!publish) {
+          return;
+        }
+        if (!this.client) {
+          return;
+        }
+        const kinds: Array<'exec' | 'plugin' | 'system-agent'> = ['exec', 'plugin', 'system-agent'];
+        for (const kind of kinds) {
+          const res = await this.client.approvalList(kind);
+          const list = Array.isArray(res) ? res : (res?.approvals ?? res?.items ?? []);
+          for (const item of list as any[]) {
+            const id = item?.id ?? item?.approvalId ?? item?.approval?.id;
+            if (!id || this.approvalSeen.has(String(id))) {
+              continue;
+            }
+            this.approvalSeen.add(String(id));
+            publish({
+              approvalId: String(id),
+              kind,
+              agentId: item?.agentId ?? item?.request?.agentId ?? '',
+              sessionKey: item?.sessionKey ?? item?.request?.sessionKey ?? '',
+              command: item?.command ?? item?.request?.command ?? item?.payload?.command ?? '',
+              cwd: item?.cwd ?? item?.request?.cwd,
+              createdAtMs: item?.createdAtMs ?? 0,
+              expiresAtMs: item?.expiresAtMs ?? 0
+            });
+          }
+        } 
+        if (this.approvalSeen.size > 500) {
+          this.approvalSeen.clear();
+        }
+      } catch (e) {
+        this.log(`approval watch failed: ${String(e)}`, 'warn');
+      }
+    };
+    this.approvalTimer = setInterval(() => { void tick(); }, 10000);
+    this.approvalTimer.unref?.();
+  }
   /** 2026-10-22：每 60 秒把最近一天的 token 用量上报中继（幂等 upsert） */
   private startUsageReporter() {
     if (this.usageTimer || !this.usagePublisher) {
@@ -174,6 +226,7 @@ export class ClawServices extends EventEmitter {
       this.isInitialized = true;
       // 2026-10-22：启动后开始周期上报用量
       this.startUsageReporter();
+      this.startApprovalWatcher();
 
       return true;
     } catch (error) {
@@ -349,6 +402,22 @@ export class ClawServices extends EventEmitter {
         case 'sessions.abort':
           // 2026-10-24：会话级中止，无 runId 时也能立即停止，并丢弃排队后续
           result = await this.handleSessionsAbort(cmdMessage.params!);
+          break;
+        // 2026-10-27 能力协议（品牌无关）：能力发现 + 执行档位
+        case 'agent.capabilities':
+          result = this.handleAgentCapabilities();
+          break;
+        case 'permissions.get':
+          result = await this.handlePermissionsGet(cmdMessage.params ?? {});
+          break;
+        case 'permissions.set':
+          result = await this.handlePermissionsSet(cmdMessage.params ?? {});
+          break;
+        case 'approvals.resolve':
+          result = await this.handleApprovalsResolve(cmdMessage.params ?? {});
+          break;
+        case 'approvals.pending':
+          result = await this.handleApprovalsPending(cmdMessage.params ?? {});
           break;
         // 2026-10-21：终端能力（owner-only，见 CmdHandler 校验）
         case 'terminal.open':
@@ -1072,12 +1141,139 @@ export class ClawServices extends EventEmitter {
     });
   }
 
-  private async handleSessionsAbort(params: Record<string, any>): Promise<any> {
-    const { sessionKey } = params;
+  /** 2026-10-27 能力协议：声明本品牌支持的能力，客户端/中继据此渲染，不硬编码品牌 */
+  private handleAgentCapabilities(): any {
+    return {
+      permissions: {
+        supported: true,
+        presets: [
+          { id: 'default', label: '预设', description: '遵循代理程式已设定的执行权限', level: 1 },
+          { id: 'read-only', label: '唯读', description: '工具可读取工作阶段根目录内的内容，但无法写入或执行命令', level: 2 },
+          { id: 'guarded', label: '防护模式', description: '超出工作阶段根目录范围的请求由人工审查', level: 3 },
+          { id: 'workspace', label: '工作区', description: '超出工作阶段根目录范围的请求由 AI 审查', level: 4 },
+          { id: 'full', label: '完整存取权', description: '无需审查，档案存取与命令执行皆不受限制', level: 5, requiresAdmin: true }
+        ]
+      },
+      approvals: { supported: true, push: true, kinds: ['exec', 'plugin', 'system-agent'] },
+      audit: { supported: true }
+    };
+  }
+
+  /** 档位 id → 品牌真实取值；default 用 null 表示清除会话级覆盖 */
+  private static readonly PERMISSION_PRESETS: Record<string, string | null> = {
+    'default': null,
+    'read-only': 'read-only',
+    'guarded': 'guarded',
+    'workspace': 'workspace',
+    'full': 'full'
+  }
+
+  private async handlePermissionsGet(params: Record<string, any>): Promise<any> {
+    const sessionKey = params?.sessionKey ?? params?.key;
     if (!sessionKey) {
-      throw new Error('sessions.abort 缺少 sessionKey 参数');
+      throw new Error('permissions.get 缺少 sessionKey');
     }
-    return await this.client?.sessionsAbort({ sessionKey });
+    const row = await this.client?.sessionsDescribe({ key: sessionKey });
+    const mode = row?.permissionMode ?? row?.session?.permissionMode ?? null;
+    const presetId = Object.entries(ClawServices.PERMISSION_PRESETS).find(([, v]) => v === mode)?.[0] ?? 'default';
+    // 2026-10-27 继承态：读一次生效策略，把「预设」解析成实际档位（客户端显示 预设（完整存取权））
+    let effectivePresetId = presetId;
+    // 2026-10-27 继承态：直接读网关配置解析实际档位（RPC exec.approvals.get 在插件里会静默失败）
+    if (presetId === 'default') {
+      const resolved = readEffectiveExecPreset();
+      if (resolved) {
+        effectivePresetId = resolved;
+      }
+    }
+    this.log(`permissions.get session=${sessionKey} mode=${mode} preset=${presetId} effective=${effectivePresetId}`, 'info');
+    return { presetId, inherited: !mode, effectivePresetId };
+  }
+
+  private async handlePermissionsSet(params: Record<string, any>): Promise<any> {
+    const sessionKey = params?.sessionKey ?? params?.key;
+    const presetId = String(params?.presetId ?? '');
+    if (!sessionKey || !presetId) {
+      throw new Error('permissions.set 缺少 sessionKey 或 presetId');
+    }
+    if (!(presetId in ClawServices.PERMISSION_PRESETS)) {
+      throw new Error('未知档位: ' + presetId);
+    }
+    const mode = ClawServices.PERMISSION_PRESETS[presetId];
+    // 2026-10-27 写入后校验：网关可能返回 success=false 却不抛异常，也可能接受了但没落库
+    const res: any = await this.client?.sessionsPatch({ key: sessionKey, patch: { permissionMode: mode } });
+    if (res && res.success === false) {
+      throw new Error(`permissions.set failed: ${res.error ?? res.code ?? 'unknown'}`);
+    }
+    const row: any = await this.client?.sessionsDescribe({ key: sessionKey });
+    const applied = row?.permissionMode ?? row?.session?.permissionMode ?? null;
+    if (mode !== null && applied !== mode) {
+      throw new Error(`permissions.set not applied: expected=${mode} actual=${applied}`);
+    }
+    this.log(`permissions.set session=${sessionKey} preset=${presetId} mode=${mode} applied=${applied}`, 'info');
+    return { ok: true, presetId };
+  }
+  /** 2026-10-27 审批待办（只读）：三类审批合并，归一化为品牌无关结构 */
+  private async handleApprovalsPending(params: Record<string, any>): Promise<any> {
+    const agentId = params?.agentId ? String(params.agentId) : undefined
+    const limit = Number(params?.limit ?? 50)
+    const kinds: Array<'exec' | 'plugin' | 'system-agent'> = ['exec', 'plugin', 'system-agent']
+    const lists = await Promise.all(kinds.map(async (kind) => {
+      try {
+        const res = await this.client?.approvalList(kind)
+        const list = Array.isArray(res) ? res : (res?.approvals ?? res?.items ?? [])
+        return (list as any[]).map((it) => ({ ...it, __kind: kind }))
+      } catch {
+        // 某一类审批不可用不影响其余类别
+        return [] as any[]
+      }
+    }))
+    const approvals = lists.flat()
+      .filter((it) => !agentId || it.agentId === agentId || it?.request?.agentId === agentId)
+      .slice(0, limit)
+      .map((it: any) => ({
+        approvalId: it.id ?? it.approvalId ?? it?.approval?.id,
+        kind: it.__kind,
+        agentId: it.agentId ?? it?.request?.agentId ?? '',
+        agentName: it.agentName ?? it?.request?.agentName,
+        sessionKey: it.sessionKey ?? it?.request?.sessionKey ?? '',
+        requesterEmpId: it.requesterEmpId ?? it?.request?.requesterEmpId ?? '',
+        command: it.command ?? it?.request?.command ?? it?.payload?.command ?? '',
+        cwd: it.cwd ?? it?.request?.cwd,
+        risk: it.risk ?? it?.request?.risk,
+        createdAtMs: it.createdAtMs ?? it?.request?.createdAtMs ?? 0,
+        expiresAtMs: it.expiresAtMs ?? it?.request?.expiresAtMs ?? 0,
+        status: it.status ?? 'pending'
+      }))
+    return { approvals }
+  }
+  /** 2026-10-27 审批决议：品牌无关入口，内部映射到网关 approval.resolve */
+  private async handleApprovalsResolve(params: Record<string, any>): Promise<any> {
+    const id = params?.approvalId ?? params?.id
+    const kind = params?.kind ?? 'exec'
+    const decision = params?.decision
+    if (!id || !decision) {
+      throw new Error('approvals.resolve 缺少 approvalId 或 decision')
+    }
+    if (!['exec', 'plugin', 'system-agent'].includes(String(kind))) {
+      throw new Error('未知审批类型: ' + kind)
+    }
+    if (!['allow-once', 'allow-always', 'deny'].includes(String(decision))) {
+      throw new Error('未知决议: ' + decision)
+    }
+    const res = await this.client?.resolveApproval({ id: String(id), kind: kind as any, decision: decision as any })
+    return { ok: true, approvalId: id, decision, upstream: res ?? null }
+  }
+  private async handleSessionsAbort(params: Record<string, any>): Promise<any> {
+    // 2026-10-27：兼容客户端 key / sessionKey 两种写法，统一按网关 schema 转发
+    const key = params?.key ?? params?.sessionKey;
+    if (!key) {
+      throw new Error('sessions.abort 缺少 key 参数');
+    }
+    return await this.client?.sessionsAbort({
+      key,
+      runId: params?.runId,
+      clearQueued: params?.clearQueued ?? true
+    });
   }
 
   private async handlChatAbout(params: Record<string, any>): Promise<void> {

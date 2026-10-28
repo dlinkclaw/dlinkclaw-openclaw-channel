@@ -7,7 +7,7 @@ import { BotType, DLArchiveSession, DLKind, DLMessage, DLMessagePayload, DLResol
 import mqtt from 'mqtt';
 import { DLHttp } from './dl-http.js';
 import { decryptAesEcbPkcs5 } from './crypto.js';
-import { AUTO_RELAY_API, AUTO_RELAY_PERSONA, AUTO_RELAY_UPLOAD } from './const.js';
+import { AUTO_RELAY_API, AUTO_RELAY_PERSONA, AUTO_RELAY_APPROVAL_EVENT, AUTO_RELAY_UPLOAD } from './const.js';
 import { CmdHandler, createCmdHandler } from '../services/index.js';
 import { CmdMessage, CmdResponse, CmdResult, EventType } from '../services/types.js';
 import { uuidStr } from '../utils.js';
@@ -109,6 +109,16 @@ export class DLClient extends EventEmitter {
         }
     }
 
+    /** 2026-10-27 把审批请求交给中继（由中继扇出给最多三人） */
+    async pushApprovalEvent(payload: Record<string, unknown>): Promise<any> {
+        try {
+            const data = await this.http.post<any>(AUTO_RELAY_APPROVAL_EVENT, payload as any);
+            return data ?? null;
+        } catch (e) {
+            this.logger.warn(`pushApprovalEvent failed: ${e}`);
+            return null;
+        }
+    }
     private async fetchConfig() {
         const url = `/guest/mqtt/getConfig/${this.ctx.account.config.apiKey}`;
         const res = await this.http.get<string>(url);
