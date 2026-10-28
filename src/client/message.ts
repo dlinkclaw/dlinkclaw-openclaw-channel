@@ -1132,45 +1132,45 @@ export async function routeAndDispatchMessage(ctx: {
     })
   }
   // 2026-10-27 terminal guard: hoisted so the finally block can always settle the stream
-    const mediaFiles: Array<string> = []
-    // 2026-10-27 terminal guard: normal end, empty reply, abort and error must all send finish=true exactly once.
-    // Otherwise client runState.status.finish stays false and the UI spins forever.
-    let terminalSent = false
-    let scopeEnded = false
-    let personaScopeKey = ''
-    const endScopeOnce = () => {
-      if (scopeEnded) {
-        return
-      }
-      scopeEnded = true
-      if (personaAgentId) {
-        endPersonaScope(personaScopeKey, personaAgentId)
-      }
+  const mediaFiles: Array<string> = []
+  // 2026-10-27 terminal guard: normal end, empty reply, abort and error must all send finish=true exactly once.
+  // Otherwise client runState.status.finish stays false and the UI spins forever.
+  let terminalSent = false
+  let scopeEnded = false
+  let personaScopeKey = ''
+  const endScopeOnce = () => {
+    if (scopeEnded) {
+      return
     }
-    // send terminal state once; tag_status_completed is parsed as a state message, not a chat bubble
-    const settleOnce = async (content: string, kind: DLKind = 'block') => {
-      if (terminalSent) {
-        return
-      }
-      terminalSent = true
-      try {
-        await client.publishProcessingState({
-          streamId,
-          content: '[tag_status_completed]',
-          status: 'read',
-          kind: 'in_process'
-        })
-      } catch (e) {
-        logger.warn?.(`account[${accountId}] publish terminal status failed: ${String(e)}`)
-      }
-      try {
-        if (messageAccumulators.has(streamId)) {
-          await client.publishToServer({ streamId, content, finish: true, kind, mediaFiles }, chatOpts)
-        }
-      } catch (e) {
-        logger.error(`account[${accountId}] publish terminal reply failed: ${String(e)}`)
-      }
+    scopeEnded = true
+    if (personaAgentId) {
+      endPersonaScope(personaScopeKey, personaAgentId)
     }
+  }
+  // send terminal state once; tag_status_completed is parsed as a state message, not a chat bubble
+  const settleOnce = async (content: string, kind: DLKind = 'block') => {
+    if (terminalSent) {
+      return
+    }
+    terminalSent = true
+    try {
+      await client.publishProcessingState({
+        streamId,
+        content: '[tag_status_completed]',
+        status: 'read',
+        kind: 'in_process'
+      })
+    } catch (e) {
+      logger.warn?.(`account[${accountId}] publish terminal status failed: ${String(e)}`)
+    }
+    try {
+      if (messageAccumulators.has(streamId)) {
+        await client.publishToServer({ streamId, content, finish: true, kind, mediaFiles }, chatOpts)
+      }
+    } catch (e) {
+      logger.error(`account[${accountId}] publish terminal reply failed: ${String(e)}`)
+    }
+  }
   try {
     const ctx = await ctxPayload;
     // 2026-10-26 群聊人设作用域：分发期间绑定被 @ 的 agent，整轮（含工具循环）都能读到正确值
@@ -1341,9 +1341,12 @@ export async function routeAndDispatchMessage(ctx: {
           }
         },
         async onItemEvent(payload) {
-          const kind = payload.kind;
+          let kind = payload.kind;
           if (!kind) {
             return;
+          }
+          if (kind === 'preamble') {
+            kind = 'commentary'  //适配前端中间文本气泡显示
           }
           const content = [];
           if (payload.name) {
@@ -1358,18 +1361,27 @@ export async function routeAndDispatchMessage(ctx: {
           if (payload.summary) {
             content.push(payload.summary)
           }
-          const messages: Array<string> = [
-            `[tag_status_call_${kind}]`,
-            `[tag_status_phase_${payload.phase}]`,
-            `[tag_status_${payload.status}]`,
-            ...content
-          ];
-          await client.publishProcessingState({
-            streamId,
-            content: messages.join('>'),
-            status: 'read',
-            kind: kind as DLKind
-          });
+          if (kind === 'commentary') {
+            await client.publishProcessingState({
+              streamId,
+              content: content.join('<br/>'),
+              status: 'read',
+              kind: kind as DLKind
+            });
+          } else {
+            const messages: Array<string> = [
+              `[tag_status_call_${kind}]`,
+              `[tag_status_phase_${payload.phase}]`,
+              `[tag_status_${payload.status}]`,
+              ...content
+            ];
+            await client.publishProcessingState({
+              streamId,
+              content: messages.join('>'),
+              status: 'read',
+              kind: kind as DLKind
+            });
+          }
           logger.info(`onItemEvent >>> kind=${payload.kind}, phase=${payload.phase}, status =${payload.status}, content=${content.join('>')}`)
         },
         onCommandOutput: async (payload) => {
