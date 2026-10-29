@@ -3,6 +3,7 @@
  * 集成到 duolian 的消息处理流程中
  */
 
+import { announceWaiting } from '../approval-native.js';
 import { DLClient } from "../client/dl-client.js";
 import { AskAgentReply, ClawServiceOptions, CmdMessage, CmdResponse, ReadlineType } from "./types.js";
 import ClawServices from "./services.js";
@@ -33,8 +34,8 @@ export class CmdHandler {
       // 2026-10-22：用量上报走服务端事件，由中继落库
       void this.dlClient.publishEventToServer(payload, 'onUsage', '1');
     }, (payload) => {
-      // 2026-10-27 审批待审推送：插件发现新条目即上报中继，中继再推审批人
-      void this.dlClient.publishEventToServer(payload, 'onApproval', '1');
+      // 2026-10-29 审批推送：优先走 HTTP（可拿到审批人姓名），失败退回 MQTT 事件
+      void announceWaiting(this.dlClient, payload as any);
     });
   }
 

@@ -3,9 +3,8 @@ import { getDLClient } from './client/client-manager.js'
 import { getDLLogger } from './runtime.js'
 
 /**
- * 2026-10-27 dlink 原生审批投递能力。
- * core 产生审批请求时调用这里的 transport.deliverPending，
- * 插件把结构化请求交给中继，由中继按 agent → relayBot → founder 扇出。
+ * 2026-10-29 dlink 原生审批投递能力。
+ * core 产生审批请求时交给插件，插件转发中继；发起人提示由客户端弹窗负责（不改写会话气泡）。
  */
 
 type AnyObj = Record<string, any>
@@ -26,7 +25,7 @@ function pickRequest(ctx: AnyObj) {
     return {
         approvalId: firstString(payload.approvalId, req.id, req.approvalId),
         kind: firstString(ctx?.approvalKind, req.kind, 'exec'),
-        agentId: firstString(req.agentId, view.agentId, req.sessionKey ? '' : ''),
+        agentId: firstString(req.agentId, view.agentId),
         sessionKey: firstString(req.sessionKey, view.sessionKey),
         command: firstString(payload.command, view.command, req.command, req.payload?.command),
         cwd: firstString(payload.cwd, view.cwd, req.cwd),
@@ -36,18 +35,11 @@ function pickRequest(ctx: AnyObj) {
 
 export function createDLApprovalCapability(): any {
     return {
-        availability: {
-            // dlink 是唯一通道；账号已配置即可承接审批
-            isConfigured: () => true,
-            shouldHandle: () => true
-        },
+        availability: { isConfigured: () => true, shouldHandle: () => true },
         presentation: {
             buildPendingPayload: (ctx: AnyObj) => {
                 const info = pickRequest(ctx)
-                return {
-                    ...info,
-                    text: firstString(ctx?.view?.summary, info.command)
-                }
+                return { ...info, text: firstString(ctx?.view?.summary, info.command) }
             },
             buildResolvedResult: () => ({ kind: 'leave' }),
             buildExpiredResult: () => ({ kind: 'leave' })
@@ -76,9 +68,9 @@ export function createDLApprovalCapability(): any {
                         cwd: info.cwd,
                         expiresAtMs: info.expiresAtMs
                     })
-                    logger.info?.(`approval forwarded to relay: id=${info.approvalId} agent=${info.agentId} kind=${info.kind}`)
+                    logger.info?.('approval forwarded: id=' + info.approvalId + ' agent=' + info.agentId)
                 } catch (e) {
-                    logger.warn?.(`approval forward failed: ${String(e)}`)
+                    logger.warn?.('approval forward failed: ' + String(e))
                 }
                 return { approvalId: info.approvalId, deliveredAt: Date.now() }
             },
@@ -86,5 +78,22 @@ export function createDLApprovalCapability(): any {
             deleteEntry: async () => { }
         },
         interactions: {}
+    }
+}
+
+/**
+ * 2026-10-29 轮询路径入口：把审批推给中继。
+ * 发起人的等待审批提示由中继通知 + 客户端弹窗完成，这里不改写会话状态。
+ */
+export async function announceWaiting(dlClient: any, payload: AnyObj): Promise<void> {
+    const logger = getDLLogger()
+    try {
+        const pushed: any = await dlClient.pushApprovalEvent(payload)
+        if (!pushed) {
+            await dlClient.publishEventToServer(payload, 'onApproval', '1')
+        }
+        logger.info?.('approval pushed: id=' + String(payload?.approvalId) + ' names=' + JSON.stringify(pushed?.approverNames ?? []))
+    } catch (e) {
+        logger.warn?.('announceWaiting failed: ' + String(e))
     }
 }

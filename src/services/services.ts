@@ -86,7 +86,7 @@ export class ClawServices extends EventEmitter {
               continue;
             }
             this.approvalSeen.add(String(id));
-            publish({
+            const pushed = await publish({
               approvalId: String(id),
               kind,
               agentId: item?.agentId ?? item?.request?.agentId ?? '',
@@ -96,6 +96,7 @@ export class ClawServices extends EventEmitter {
               createdAtMs: item?.createdAtMs ?? 0,
               expiresAtMs: item?.expiresAtMs ?? 0
             });
+            void pushed;
           }
         } 
         if (this.approvalSeen.size > 500) {
