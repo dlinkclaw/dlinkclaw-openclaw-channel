@@ -37,6 +37,8 @@ export const AUTO_RELAY_API = '/guest/relayBot/sendNotification';
 // 2026-10-26 人设注入：按 sessionKey 拉取 agent 人格与生效约定
 export const AUTO_RELAY_PERSONA = '/guest/relayBot/persona';
 export const AUTO_RELAY_APPROVAL_EVENT = '/guest/relayBot/approvalEvent';
+// 2026-10-31 档位权限：插件在 apply 前回调中继校验
+export const AUTO_RELAY_PERMISSION_CHECK = "/guest/relayBot/permissionCheck";
 export const AUTO_RELAY_UPLOAD = "/guest/relayBot/uploadMediaFiles";
 
 // ====== 上传文件配置常量（根据服务器性能调整）=======

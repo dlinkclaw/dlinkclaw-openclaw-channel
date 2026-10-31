@@ -47,15 +47,18 @@ export class ClawServices extends EventEmitter {
   private readonly usagePublisher?: (payload: Record<string, unknown>) => void;
   // 2026-10-27 审批事件推送（插件 → 中继），本地轮询发现新待审即上报
   private readonly approvalPublisher?: (payload: Record<string, unknown>) => void;
+  /** 2026-10-31 档位权限：应用 preset 前回调中继校验（fail-closed） */
+  private readonly permissionChecker?: (sessionKey: string, presetId: string) => Promise<any>;
   private approvalTimer: NodeJS.Timeout | null = null;
   private readonly approvalSeen = new Set<string>();
   private usageTimer: NodeJS.Timeout | null = null;
-  constructor(options: ClawServiceOptions, logger: PluginLogger, terminalSink?: TerminalDataSink, usagePublisher?: (payload: Record<string, unknown>) => void, approvalPublisher?: (payload: Record<string, unknown>) => void) {
+  constructor(options: ClawServiceOptions, logger: PluginLogger, terminalSink?: TerminalDataSink, usagePublisher?: (payload: Record<string, unknown>) => void, approvalPublisher?: (payload: Record<string, unknown>) => void, permissionChecker?: (sessionKey: string, presetId: string) => Promise<any>) {
     super();
     this.options = options;
     this.logger = logger;
     this.usagePublisher = usagePublisher;
     this.approvalPublisher = approvalPublisher;
+    this.permissionChecker = permissionChecker;
     this.terminalManager = new TerminalManager(
       terminalSink ?? (() => { }),
       (msg, type) => this.log(msg, (type as any) ?? 'info'),
@@ -1198,6 +1201,15 @@ export class ClawServices extends EventEmitter {
     }
     if (!(presetId in ClawServices.PERMISSION_PRESETS)) {
       throw new Error('未知档位: ' + presetId);
+    }
+    // 2026-10-31 档位权限：以中继判定为准，拒绝即中止（fail-closed）
+    if (this.permissionChecker) {
+      const chk: any = await this.permissionChecker(sessionKey, presetId);
+      const payload = chk?.data ?? chk;
+      if (payload?.allowed !== true) {
+        const reason = payload?.reason ?? chk?.error ?? 'permission denied';
+        throw new Error(`permissions.set denied: ${reason}`);
+      }
     }
     const mode = ClawServices.PERMISSION_PRESETS[presetId];
     // 2026-10-27 写入后校验：网关可能返回 success=false 却不抛异常，也可能接受了但没落库

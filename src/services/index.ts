@@ -36,7 +36,7 @@ export class CmdHandler {
     }, (payload) => {
       // 2026-10-29 审批推送：优先走 HTTP（可拿到审批人姓名），失败退回 MQTT 事件
       void announceWaiting(this.dlClient, payload as any);
-    });
+    }, (sessionKey: string, presetId: string) => this.dlClient.checkPermission(sessionKey, presetId));
   }
 
   private log(msg: string, type: 'info' | 'warn' | 'error' | 'debug') {

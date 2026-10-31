@@ -7,7 +7,7 @@ import { BotType, DLArchiveSession, DLKind, DLMessage, DLMessagePayload, DLResol
 import mqtt from 'mqtt';
 import { DLHttp } from './dl-http.js';
 import { decryptAesEcbPkcs5 } from './crypto.js';
-import { AUTO_RELAY_API, AUTO_RELAY_PERSONA, AUTO_RELAY_APPROVAL_EVENT, AUTO_RELAY_UPLOAD } from './const.js';
+import { AUTO_RELAY_API, AUTO_RELAY_PERSONA, AUTO_RELAY_APPROVAL_EVENT, AUTO_RELAY_UPLOAD, AUTO_RELAY_PERMISSION_CHECK } from './const.js';
 import { CmdHandler, createCmdHandler } from '../services/index.js';
 import { CmdMessage, CmdResponse, CmdResult, EventType } from '../services/types.js';
 import { uuidStr } from '../utils.js';
@@ -107,6 +107,15 @@ export class DLClient extends EventEmitter {
             this.logger.warn(`fetchPersona failed: ${e}`);
             return null;
         }
+    }
+
+    /**
+     * 2026-10-31 档位权限：应用 presetId 之前回调中继校验。
+     * 中继按 sessionKey 反查 agent 与操作人，插件不参与鉴权判定。
+     */
+    async checkPermission(sessionKey: string, presetId: string): Promise<any> {
+        const data = await this.http.post<any>(AUTO_RELAY_PERMISSION_CHECK, { sessionKey, presetId });
+        return data ?? null;
     }
 
     /** 2026-10-27 把审批请求交给中继（由中继扇出给最多三人） */
