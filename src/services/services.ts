@@ -51,6 +51,8 @@ export class ClawServices extends EventEmitter {
   private readonly permissionChecker?: (sessionKey: string, presetId: string) => Promise<any>;
   /** 2026-10-31 模型授权：应用模型覆盖前回调中继校验 */
   private readonly modelChecker?: (sessionKey: string, provider: string, model: string) => Promise<any>;
+  /** 2026-10-31 档位下调兜底：每会话最多 60s 检查一次，避免每条消息都多两次调用 */
+  private readonly permCeilingCheckedAt = new Map<string, number>();
   private approvalTimer: NodeJS.Timeout | null = null;
   private readonly approvalSeen = new Set<string>();
   private usageTimer: NodeJS.Timeout | null = null;
@@ -507,7 +509,51 @@ export class ClawServices extends EventEmitter {
   }
 
   private async handleAskAgent(params: AskAgentParams): Promise<any> {
+    // 2026-10-31 方案A：管理员调低上限后，已有会话在下次提问前自动降级（失败不影响发消息）
+    await this.enforcePermissionCeiling(params?.sessionKey);
     return await this.client?.askAgent(params);
+  }
+
+  /**
+   * 2026-10-31 档位上限下调兜底。
+   * 只处理「会话显式设置过档位」的情况：读当前 permissionMode → 换回 presetId →
+   * 问中继是否仍允许；不允许则 patch 到 maxPresetId。任何异常都只记日志，不阻断。
+   */
+  private async enforcePermissionCeiling(sessionKey?: string): Promise<void> {
+    if (!sessionKey || !this.permissionChecker) {
+      return;
+    }
+    const now = Date.now();
+    const last = this.permCeilingCheckedAt.get(sessionKey) ?? 0;
+    if (now - last < 60_000) {
+      return;
+    }
+    this.permCeilingCheckedAt.set(sessionKey, now);
+    try {
+      const row: any = await this.client?.sessionsDescribe({ key: sessionKey });
+      const mode = row?.permissionMode ?? row?.session?.permissionMode ?? null;
+      if (!mode) {
+        return; // 继承态，没有显式档位
+      }
+      const presetId = Object.entries(ClawServices.PERMISSION_PRESETS).find(([, v]) => v === mode)?.[0];
+      if (!presetId || presetId === 'default') {
+        return;
+      }
+      const chk: any = await this.permissionChecker(sessionKey, presetId);
+      const payload = chk?.data ?? chk;
+      if (!payload || payload.allowed !== false) {
+        return;
+      }
+      const maxPresetId = String(payload.maxPresetId ?? 'guarded');
+      const maxMode = ClawServices.PERMISSION_PRESETS[maxPresetId];
+      if (!maxMode) {
+        return;
+      }
+      await this.client?.sessionsPatch({ key: sessionKey, patch: { permissionMode: maxMode } });
+      this.log('permission ceiling enforced: session=' + sessionKey + ' ' + presetId + ' -> ' + maxPresetId, 'warn');
+    } catch (e) {
+      this.log('enforcePermissionCeiling failed, ignore: ' + String(e), 'warn');
+    }
   }
 
   /**
