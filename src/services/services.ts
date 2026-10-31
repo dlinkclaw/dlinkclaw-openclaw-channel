@@ -49,16 +49,19 @@ export class ClawServices extends EventEmitter {
   private readonly approvalPublisher?: (payload: Record<string, unknown>) => void;
   /** 2026-10-31 档位权限：应用 preset 前回调中继校验（fail-closed） */
   private readonly permissionChecker?: (sessionKey: string, presetId: string) => Promise<any>;
+  /** 2026-10-31 模型授权：应用模型覆盖前回调中继校验 */
+  private readonly modelChecker?: (sessionKey: string, provider: string, model: string) => Promise<any>;
   private approvalTimer: NodeJS.Timeout | null = null;
   private readonly approvalSeen = new Set<string>();
   private usageTimer: NodeJS.Timeout | null = null;
-  constructor(options: ClawServiceOptions, logger: PluginLogger, terminalSink?: TerminalDataSink, usagePublisher?: (payload: Record<string, unknown>) => void, approvalPublisher?: (payload: Record<string, unknown>) => void, permissionChecker?: (sessionKey: string, presetId: string) => Promise<any>) {
+  constructor(options: ClawServiceOptions, logger: PluginLogger, terminalSink?: TerminalDataSink, usagePublisher?: (payload: Record<string, unknown>) => void, approvalPublisher?: (payload: Record<string, unknown>) => void, permissionChecker?: (sessionKey: string, presetId: string) => Promise<any>, modelChecker?: (sessionKey: string, provider: string, model: string) => Promise<any>) {
     super();
     this.options = options;
     this.logger = logger;
     this.usagePublisher = usagePublisher;
     this.approvalPublisher = approvalPublisher;
     this.permissionChecker = permissionChecker;
+    this.modelChecker = modelChecker;
     this.terminalManager = new TerminalManager(
       terminalSink ?? (() => { }),
       (msg, type) => this.log(msg, (type as any) ?? 'info'),
@@ -320,6 +323,11 @@ export class ClawServices extends EventEmitter {
           break;
 
         // 模型管理
+        case 'models.catalog':
+          // 2026-10-31 模型目录（给中继按需拉取）：包装成对象，避免 data 为数组导致中继反序列化失败
+          result = { models: await this.handleListModels(cmdMessage.params as { agentId?: string } | undefined) };
+          break;
+
         case 'models.list':
           // 2026-09-06 适配 openclaw 9.2：models.list 需显式 agentId（多 agent 配置下无 owner 会报 INVALID_REQUEST）
           result = await this.handleListModels(cmdMessage.params as { agentId?: string } | undefined);
@@ -515,6 +523,22 @@ export class ClawServices extends EventEmitter {
     // 2026-10-21：支持「只改推理强度」的 patch；provider/model 与 thinkingLevel 至少给一个
     if ((!provider || provider.length === 0 || !model || model.length === 0) && !thinkingLevel) {
       return null;
+    }
+    // 2026-10-31 模型授权：应用覆盖前回调中继校验。
+    // 明确 denied 才拒绝；网络异常放行，避免中继短暂不可用时把人锁死。
+    if (provider && model && this.modelChecker) {
+      try {
+        const chk: any = await this.modelChecker(sessionKey, provider, model);
+        const payload = chk?.data ?? chk;
+        if (payload && payload.allowed === false) {
+          throw new Error('model not authorized: ' + provider + '/' + model);
+        }
+      } catch (e) {
+        if (String(e).includes('model not authorized')) {
+          throw e;
+        }
+        this.log('modelCheck failed, allow: ' + String(e), 'warn');
+      }
     }
     // 推理强度合法值校验（off/minimal/low/medium/high），非法值直接忽略
     const THINK_LEVELS = ['off', 'minimal', 'low', 'medium', 'high'];
@@ -969,6 +993,19 @@ export class ClawServices extends EventEmitter {
     });
   }
   //#endregion
+
+  /**
+   * 2026-10-31 模型目录导出（给中继上报用）：复用 models.list 归一化逻辑。
+   */
+  async exportModelCatalog(agentId?: string): Promise<Array<Record<string, unknown>>> {
+    try {
+      const res = await this.handleListModels(agentId ? { agentId } : undefined);
+      return Array.isArray(res) ? res as Array<Record<string, unknown>> : [];
+    } catch (e) {
+      this.log('exportModelCatalog failed: ' + String(e), 'warn');
+      return [];
+    }
+  }
 
   //#region ===================== 会话处理器 ======================
   private async handleSessionList(params: Record<string, unknown>): Promise<any> {

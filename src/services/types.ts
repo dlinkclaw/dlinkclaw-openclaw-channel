@@ -390,6 +390,7 @@ export type CmdType =
   | 'status.usage'
 
   | 'models.list'
+  | 'models.catalog'
 
   | 'sessions.list'
   | 'sessions.get'

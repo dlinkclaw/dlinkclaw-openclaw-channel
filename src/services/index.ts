@@ -36,7 +36,7 @@ export class CmdHandler {
     }, (payload) => {
       // 2026-10-29 审批推送：优先走 HTTP（可拿到审批人姓名），失败退回 MQTT 事件
       void announceWaiting(this.dlClient, payload as any);
-    }, (sessionKey: string, presetId: string) => this.dlClient.checkPermission(sessionKey, presetId));
+    }, (sessionKey: string, presetId: string) => this.dlClient.checkPermission(sessionKey, presetId), (sessionKey: string, provider: string, model: string) => this.dlClient.checkModel(sessionKey, provider, model));
   }
 
   private log(msg: string, type: 'info' | 'warn' | 'error' | 'debug') {
@@ -65,6 +65,17 @@ export class CmdHandler {
 
       this.services.on('onHandshaked', (payload) => {
         this.dlClient.publishEventToServer(payload, 'onHandshaked', '0')
+        // 2026-10-31 模型目录上报：握手后推一份给中继（失败不影响连接）
+        void (async () => {
+          try {
+            const models = await this.services.exportModelCatalog()
+            if (models.length > 0) {
+              await this.dlClient.pushModelCatalog({ models })
+            }
+          } catch {
+            // 上报失败不影响握手
+          }
+        })()
       })
 
       this.services.on('onAgentReply', (payload) => {

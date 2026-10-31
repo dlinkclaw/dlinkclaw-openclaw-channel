@@ -7,7 +7,7 @@ import { BotType, DLArchiveSession, DLKind, DLMessage, DLMessagePayload, DLResol
 import mqtt from 'mqtt';
 import { DLHttp } from './dl-http.js';
 import { decryptAesEcbPkcs5 } from './crypto.js';
-import { AUTO_RELAY_API, AUTO_RELAY_PERSONA, AUTO_RELAY_APPROVAL_EVENT, AUTO_RELAY_UPLOAD, AUTO_RELAY_PERMISSION_CHECK } from './const.js';
+import { AUTO_RELAY_API, AUTO_RELAY_PERSONA, AUTO_RELAY_APPROVAL_EVENT, AUTO_RELAY_UPLOAD, AUTO_RELAY_PERMISSION_CHECK, AUTO_RELAY_MODEL_CATALOG, AUTO_RELAY_MODEL_CHECK } from './const.js';
 import { CmdHandler, createCmdHandler } from '../services/index.js';
 import { CmdMessage, CmdResponse, CmdResult, EventType } from '../services/types.js';
 import { uuidStr } from '../utils.js';
@@ -105,6 +105,29 @@ export class DLClient extends EventEmitter {
             return data ?? null;
         } catch (e) {
             this.logger.warn(`fetchPersona failed: ${e}`);
+            return null;
+        }
+    }
+
+    /**
+     * 2026-10-31 模型授权二次校验：应用模型覆盖前调用中继。
+     */
+    async checkModel(sessionKey: string, provider: string, model: string): Promise<any> {
+        const data = await this.http.post<any>(AUTO_RELAY_MODEL_CHECK, { sessionKey, provider, model });
+        return data ?? null;
+    }
+
+    /**
+     * 2026-10-31 模型目录上报：握手后把归一化的 provider/model 列表推给中继，
+     * 供客户端按规则过滤与切换校验使用。
+     */
+    async pushModelCatalog(payload: Record<string, unknown>): Promise<any> {
+        try {
+            // 2026-10-31 修正：中继 http 客户端签名会对参数做 trim，数组会报 value.trim is not a function；
+            // 这里统一序列化为字符串参数提交，由中继侧反序列化。
+            return await this.http.post<any>(AUTO_RELAY_MODEL_CATALOG, { payload: JSON.stringify(payload) });
+        } catch (e) {
+            this.logger.warn('pushModelCatalog failed: ' + String(e));
             return null;
         }
     }

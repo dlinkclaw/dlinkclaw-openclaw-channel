@@ -39,6 +39,10 @@ export const AUTO_RELAY_PERSONA = '/guest/relayBot/persona';
 export const AUTO_RELAY_APPROVAL_EVENT = '/guest/relayBot/approvalEvent';
 // 2026-10-31 档位权限：插件在 apply 前回调中继校验
 export const AUTO_RELAY_PERMISSION_CHECK = "/guest/relayBot/permissionCheck";
+// 2026-10-31 模型目录上报
+export const AUTO_RELAY_MODEL_CATALOG = "/guest/relayBot/modelCatalog";
+// 2026-10-31 model authorization pre-check
+export const AUTO_RELAY_MODEL_CHECK = "/guest/relayBot/modelCheck";
 export const AUTO_RELAY_UPLOAD = "/guest/relayBot/uploadMediaFiles";
 
 // ====== 上传文件配置常量（根据服务器性能调整）=======
