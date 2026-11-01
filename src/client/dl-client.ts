@@ -171,10 +171,31 @@ export class DLClient extends EventEmitter {
 
     private async changeConnectStatus(status: 'start' | 'stop') {
         const url = '/guest/relayBot/changeConnectStatus/' + this.ctx.account.config.apiKey;
+        // 2026-11-01 带上报时间戳：中继按 last-write-wins 处理，
+        // 避免旧进程延迟到达的 stop(false) 覆盖新进程的 start(true)。
+        // 注：dl-http 的 genSign 会自动附加 timestamp（毫秒），中继按它做 last-write-wins，
+        // 这里不需要再单独传 ts。
         const p = {
             connect: status === 'start' ? 'true' : 'false'
         }
         return await this.http.post(url, p);
+    }
+
+    /**
+     * 2026-11-01 start 上报失败重试：单次网络抖动不该让连接状态永久停 false。
+     */
+    private async changeConnectStatusWithRetry(status: 'start' | 'stop', attempts: number = 3): Promise<void> {
+        for (let i = 0; i < attempts; i++) {
+            try {
+                await this.changeConnectStatus(status);
+                return;
+            } catch (e) {
+                this.logger.warn('changeConnectStatus(' + status + ') attempt ' + (i + 1) + ' failed: ' + String(e));
+                if (i < attempts - 1) {
+                    await new Promise<void>((resolve) => setTimeout(resolve, 500 * (i + 1)));
+                }
+            }
+        }
     }
 
     private async connect(): Promise<void> {
@@ -346,7 +367,7 @@ export class DLClient extends EventEmitter {
         if (this.cmdHandler) {
             await this.cmdHandler.initialize();
         }
-        await this.changeConnectStatus('start');
+        await this.changeConnectStatusWithRetry('start');
     }
 
     async stop() {
@@ -378,7 +399,7 @@ export class DLClient extends EventEmitter {
         try {
             await Promise.race([
                 this.changeConnectStatus('stop'),
-                new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+                new Promise<void>((resolve) => setTimeout(resolve, 2000)),
             ]);
         } catch (e) {
             this.logger.warn(`DLClient changeConnectStatus(stop) failed: ${String(e)}`);
