@@ -995,9 +995,14 @@ export async function buildMessageContext(params: {
   //   `${channelId} account[${account.accountId}]: message body: ${messageBody}`
   // )
 
+  // 2026-11-02 群聊必须告诉 agent 发送人是谁：直聊 from 就是 empId，群聊原本只有 chatId。
+  // 与历史记录保持同一格式（chatId:发送人），agent 才能分辨群里谁在说话。
+  const senderLabel = isGroup
+    ? chatId + ':' + (fromUser.nickname || fromUser.empId)
+    : chatId;
   const body = core.channel.reply.formatAgentEnvelope({
     channel: channelId,
-    from: chatId,
+    from: senderLabel,
     timestamp: Date.now(),
     envelope: envelopeOptions,
     body: messageBody,
