@@ -11,6 +11,25 @@ import { uuidStr } from "../utils.js";
 import { rememberStream, forgetStream } from "../stream-map.js";
 import { ChatType } from "openclaw/plugin-sdk/core";
 
+/** 2026-11-03：渠道展示名，用于告诉 agent 当前消息来源渠道。 */
+const CHANNEL_LABELS: Record<BotType, string> = {
+  ewx: '企业微信 (WeCom)',
+  qq: 'QQ',
+  dd: '钉钉 (DingTalk)',
+  feishu: '飞书 (Feishu/Lark)',
+  dLink: 'DLinkClaw',
+};
+
+/**
+ * 2026-11-03：非 dLink 渠道不支持「文本 + 附件」混排，提示 agent 分开发送。
+ * dLink 客户端支持混排，不追加提示，避免无意义 token。
+ */
+function buildChannelCapabilityHint(botType: BotType): string {
+  if (botType === 'dLink') return '';
+  const label = CHANNEL_LABELS[botType] ?? botType;
+  return ' [System] Current channel: ' + label + ' (botType=' + botType + '). This channel does NOT support text and attachments in the same message. When sending a file, image, voice, or video, send the attachment as a standalone message with no text; put any explanation in a separate text message before or after the attachment.';
+}
+
 /** 2026-10-18：只有包含复选框行(- [ ] / - [x] / - [/])的内容才算任务清单。 */
 function isTaskListContent(content: string): boolean {
   return /(^|\n)\s*[-*]\s*\[[ xX/~%>]*\]\s*\S/.test(content)
@@ -1000,6 +1019,9 @@ export async function buildMessageContext(params: {
   const senderLabel = isGroup
     ? chatId + ':' + (fromUser.nickname || fromUser.empId)
     : chatId;
+  // 2026-11-03：告知 agent 当前渠道与附件发送限制（非 dLink 不支持文本+附件混排）
+  messageBody += buildChannelCapabilityHint(msg.botType);
+
   const body = core.channel.reply.formatAgentEnvelope({
     channel: channelId,
     from: senderLabel,

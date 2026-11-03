@@ -765,6 +765,11 @@ export class DLClient extends EventEmitter {
         }
         let res;
         if (mediaFiles && mediaFiles.length > 0) {
+            // 2026-11-03：非 dLink 渠道不支持文本+附件混排，先单独发文本，再单独发附件
+            if (botType !== 'dLink' && text && text.trim().length > 0) {
+                await this.http.post<string>(AUTO_RELAY_API, { ...data, content: text });
+                data['content'] = '';
+            }
             res = await this.http.upload<string>(AUTO_RELAY_API, mediaFiles, data);
         } else {
             res = await this.http.post<string>(AUTO_RELAY_API, data);
