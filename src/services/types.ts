@@ -492,6 +492,8 @@ export type CmdParamsPatchSessionEntry = {
   model?: string,
   /** 2026-10-21：会话级推理强度（off/minimal/low/medium/high），与模型选择同通道 */
   thinkingLevel?: string,
+  /** 2026-11-04 客户端重命名：插件侧会话展示名 */
+  displayName?: string,
 }
 
 // ==================== Skill 类型 ====================

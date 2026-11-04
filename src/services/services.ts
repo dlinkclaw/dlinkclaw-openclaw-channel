@@ -27,6 +27,7 @@ import { getSessionEntry, patchSessionEntry, resolveStorePath, listSessionEntrie
 import { setGatewayClient, approvePairingRequest } from './gateway-rpc.js';
 import { DEFAULT_ACCOUNT_ID } from 'openclaw/plugin-sdk/core';
 import { markRunStopped } from '../runtime.js';
+import { getSessionSync } from './session-sync-registry.js';
 import { flushPendingMessages } from '../pending-pairing.js';
 import { TerminalManager, TerminalDataSink } from './terminal.js';
 
@@ -562,12 +563,12 @@ export class ClawServices extends EventEmitter {
    * @param userId 
    */
   private async handleUpdateSessionModel(params: CmdParamsPatchSessionEntry) {
-    const { sessionKey, provider, model, thinkingLevel } = params;
+    const { sessionKey, provider, model, thinkingLevel, displayName } = params;
     if (!sessionKey || sessionKey.length === 0) {
       return null;
     }
-    // 2026-10-21：支持「只改推理强度」的 patch；provider/model 与 thinkingLevel 至少给一个
-    if ((!provider || provider.length === 0 || !model || model.length === 0) && !thinkingLevel) {
+    // 2026-10-21：支持「只改推理强度」的 patch；2026-11-04 支持只改 displayName
+    if ((!provider || provider.length === 0 || !model || model.length === 0) && !thinkingLevel && !displayName) {
       return null;
     }
     // 2026-10-31 模型授权：应用覆盖前回调中继校验。
@@ -618,10 +619,18 @@ export class ClawServices extends EventEmitter {
         if (thinkOverride) {
           entry.thinkingLevel = thinkOverride;
         }
+        // 2026-11-04 客户端重命名：写入插件侧会话 displayName
+        if (displayName) {
+          (entry as any).displayName = displayName;
+        }
         return { ...entry };
       },
     });
-    return { provider, model, thinkingLevel: thinkOverride };
+    // 2026-11-04 同步会话索引（中继侧 titleSource=user）
+    if (displayName) {
+      getSessionSync()?.setDisplayName(sessionKey, displayName);
+    }
+    return { provider, model, thinkingLevel: thinkOverride, displayName };
   }
 
   /**
@@ -761,7 +770,9 @@ export class ClawServices extends EventEmitter {
       name: params.id,
       workspace: workspace_path,
       emoji: params.emoji,
-      avatar: (params.avatar && params.avatar.length > 0) ? this.options.baseUrl + params.avatar : undefined,
+      avatar: (params.avatar && params.avatar.length > 0)
+        ? (/^(https?:|data:)/i.test(params.avatar) ? params.avatar : this.options.baseUrl + params.avatar)
+        : undefined,
       model: provider.length > 0 ? `${provider}/${params.model}` : params.model,
     }
     let result: { agentId: string } ;
@@ -838,6 +849,8 @@ export class ClawServices extends EventEmitter {
           workspace: params.workspace,
           model: provider.length > 0 ? `${provider}/${params.model}` : params.model,
           avatar: params.avatar
+            ? (/^(https?:|data:)/i.test(params.avatar) ? params.avatar : this.options.baseUrl + params.avatar)
+            : undefined
         }), 8000, 'agents.update');
       } catch (e) {
         // 响应可能因热加载丢失，但配置已写入 → 回查确认
@@ -1054,6 +1067,18 @@ export class ClawServices extends EventEmitter {
   }
 
   //#region ===================== 会话处理器 ======================
+  /** 2026-11-04 会话索引同步：列出所有 agentId */
+  async listAgentIdsForSync(): Promise<Array<string>> {
+    const res: any = await this.client?.listAgents();
+    const list = res?.agents ?? [];
+    return list.map((a: any) => a.id).filter((id: any) => typeof id === 'string' && id.length > 0);
+  }
+
+  /** 2026-11-04 会话索引同步：分页列会话 */
+  async listSessionsForSync(params: Record<string, unknown>): Promise<any> {
+    return await this.client?.sessionsList(params);
+  }
+
   private async handleSessionList(params: Record<string, unknown>): Promise<any> {
     return await this.client?.sessionsList(params);
   }
@@ -1078,7 +1103,12 @@ export class ClawServices extends EventEmitter {
     if (!sessionKey) {
       throw new Error('sessions.create 缺少 sessionKey 参数');
     }
-    return await this.client?.sessionsCreate({ key: sessionKey });
+    const res = await this.client?.sessionsCreate({ key: sessionKey });
+    // 2026-11-04 新建会话立即回推索引：不必等第一条消息，客户端列表马上能看到
+    const sync = getSessionSync();
+    sync?.touch(sessionKey);
+    await sync?.flushNow();
+    return res;
   }
 
   /**
@@ -1086,13 +1116,43 @@ export class ClawServices extends EventEmitter {
    * 入参: { sessionKey }
    * - sessionKey: 完整的 sessionKey，如 "agent:main:workrelay-00001:direct:i35916630580137984"
    */
+  /**
+   * 2026-11-04 网关 2026.10.5 起，archived 属于 lifecycle patch，必须带 expectedSessionId。
+   * 先 describe 取当前 sessionId，再 patch，避免 INVALID_REQUEST。
+   */
+  private async resolveSessionId(sessionKey: string): Promise<string | undefined> {
+    const desc: any = await this.client?.sessionsDescribe({ key: sessionKey });
+    let sessionId = desc?.session?.sessionId ?? desc?.sessionId;
+    if (sessionId) {
+      return sessionId;
+    }
+    // describe 未带 sessionId 时，退回 sessions.list 查找（列表行包含 sessionId）
+    const agentId = sessionKey.split(':')[1];
+    if (!agentId) return undefined;
+    const list: any = await this.client?.sessionsList({ agentId, limit: 500, archived: 'all' });
+    const row = (list?.sessions ?? []).find((x: any) => (x.key ?? x.sessionKey) === sessionKey);
+    sessionId = row?.sessionId;
+    return sessionId;
+  }
+
   private async handleSessionArchive(params: Record<string, string>): Promise<any> {
     const { sessionKey } = params;
     if (!sessionKey) {
       throw new Error('sessions.archive 缺少 sessionKey 参数');
     }
     this.log(`sessions.archive sessionKey=${sessionKey}`, 'info');
-    return await this.client?.sessionsPatch({ key: sessionKey, patch: { archived: true } });
+    const sessionId = await this.resolveSessionId(sessionKey);
+    if (!sessionId) {
+      throw new Error('sessions.archive 找不到会话 sessionId: ' + sessionKey);
+    }
+    const res = await this.client?.sessionsPatch({
+      key: sessionKey,
+      patch: { archived: true, expectedSessionId: sessionId }
+    });
+    const sync = getSessionSync();
+    sync?.markArchived(sessionKey, true);
+    await sync?.flushNow();
+    return res;
   }
 
   /**
@@ -1106,7 +1166,18 @@ export class ClawServices extends EventEmitter {
       throw new Error('sessions.restore 缺少 sessionKey 参数');
     }
     this.log(`sessions.restore sessionKey=${sessionKey}`, 'info');
-    return await this.client?.sessionsPatch({ key: sessionKey, patch: { archived: false } });
+    const sessionId = await this.resolveSessionId(sessionKey);
+    if (!sessionId) {
+      throw new Error('sessions.restore 找不到会话 sessionId: ' + sessionKey);
+    }
+    const res = await this.client?.sessionsPatch({
+      key: sessionKey,
+      patch: { archived: false, expectedSessionId: sessionId }
+    });
+    const sync = getSessionSync();
+    sync?.markArchived(sessionKey, false);
+    await sync?.flushNow();
+    return res;
   }
 
   /**
@@ -1127,7 +1198,11 @@ export class ClawServices extends EventEmitter {
     if (sessionKey.startsWith(`agent:main:${this.options.channelId}:`) && effective_userId) {
       throw new Error('Deleting the default session is prohibited.')
     }
-    return await this.client?.sessionsDelete({ key: sessionKey });
+    const res = await this.client?.sessionsDelete({ key: sessionKey });
+    const sync = getSessionSync();
+    sync?.markDeleted(sessionKey);
+    await sync?.flushNow();
+    return res;
   }
 
   private async handleSessionReset(params: Record<string, string>): Promise<any> {

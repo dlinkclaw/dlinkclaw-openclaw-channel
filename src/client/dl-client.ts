@@ -7,7 +7,7 @@ import { BotType, DLArchiveSession, DLKind, DLMessage, DLMessagePayload, DLResol
 import mqtt from 'mqtt';
 import { DLHttp } from './dl-http.js';
 import { decryptAesEcbPkcs5 } from './crypto.js';
-import { AUTO_RELAY_API, AUTO_RELAY_PERSONA, AUTO_RELAY_APPROVAL_EVENT, AUTO_RELAY_UPLOAD, AUTO_RELAY_PERMISSION_CHECK, AUTO_RELAY_MODEL_CATALOG, AUTO_RELAY_MODEL_CHECK } from './const.js';
+import { AUTO_RELAY_API, AUTO_RELAY_PERSONA, AUTO_RELAY_APPROVAL_EVENT, AUTO_RELAY_UPLOAD, AUTO_RELAY_PERMISSION_CHECK, AUTO_RELAY_MODEL_CATALOG, AUTO_RELAY_MODEL_CHECK, AUTO_RELAY_SESSION_SYNC } from './const.js';
 import { CmdHandler, createCmdHandler } from '../services/index.js';
 import { CmdMessage, CmdResponse, CmdResult, EventType } from '../services/types.js';
 import { uuidStr } from '../utils.js';
@@ -566,7 +566,9 @@ export class DLClient extends EventEmitter {
                     if (session.newSessionKey) {
                         data["archiveSession.newSessionKey"] = session.newSessionKey;
                     }
-                    data["archiveSession.runId"] = session.runId;
+                    if (session.runId) {
+                        data["archiveSession.runId"] = session.runId;
+                    }
                 }
                 let res: string | undefined
                 if (mediaFiles && mediaFiles.length > 0) {
@@ -719,6 +721,18 @@ export class DLClient extends EventEmitter {
             "approved": ok ? "true" : "false"
         }
         await this.http.post(url, p);
+    }
+
+    /**
+     * 2026-11-04 会话索引同步：插件 -> 中继。
+     * 复杂结构走 payload JSON 字符串，匹配中继 ExtBotCtl.agentSessionSync 的表单签名。
+     */
+    async syncAgentSessions(params: { agentId: string; payload: string }): Promise<any> {
+        const data: Record<string, string> = {
+            agentId: params.agentId,
+            payload: params.payload
+        };
+        return await this.http.post<any>(AUTO_RELAY_SESSION_SYNC, data);
     }
 
     async autoReply(params: {

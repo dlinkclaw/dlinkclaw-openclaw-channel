@@ -10,6 +10,7 @@ import { bufferPendingMessage } from "./pending-pairing.js";
 import { buildMessageContext, parseMessageContent, routeAndDispatchMessage } from "./client/message.js";
 import { withTimeout } from "./client/timeout.js";
 import { getDLClient, removeDLClient, setDLClient } from "./client/client-manager.js";
+import { getSessionSync } from "./services/session-sync-registry.js";
 import { downloadAndSaveFiles } from "./client/media-handler.js";
 import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/core";
 import { DEFAULT_GROUP_HISTORY_LIMIT, HistoryEntry, createChannelHistoryWindow } from "openclaw/plugin-sdk/reply-history";
@@ -359,6 +360,12 @@ async function duolinkMessageHandler(dlCtx: DLMessageContext, client: DLClient) 
     if (!ctxPayload) {
         logger.warn("上下文为空,未进入方法routeAndDispatchMessage...")
         return;
+    }
+
+    // 2026-11-04 会话索引同步：入站消息立即登记，保证新会话尽快出现在中继列表
+    const inboundSessionKey = msg.toAgent?.sessionKey;
+    if (inboundSessionKey) {
+        getSessionSync()?.touch(inboundSessionKey);
     }
 
     try {

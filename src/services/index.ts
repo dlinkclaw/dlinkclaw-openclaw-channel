@@ -7,6 +7,8 @@ import { announceWaiting } from '../approval-native.js';
 import { DLClient } from "../client/dl-client.js";
 import { AskAgentReply, ClawServiceOptions, CmdMessage, CmdResponse, ReadlineType } from "./types.js";
 import ClawServices from "./services.js";
+import { SessionSync } from "./session-sync.js";
+import { setSessionSync } from "./session-sync-registry.js";
 // 2026-09-06 适配 openclaw 2026.9.1：根入口已移除，改从 core 导入
 import { PluginLogger } from "openclaw/plugin-sdk/core";
 
@@ -24,6 +26,7 @@ const LAST_PUSHED_CONTENT: Map<string, string> = new Map();
 export class CmdHandler {
   private readonly dlClient: DLClient;
   private services: ClawServices;
+  private readonly sessionSync: SessionSync;
   private isInitialized = false;
   constructor(config: ClawServiceOptions, dlClient: DLClient, logger: PluginLogger) {
     this.dlClient = dlClient;
@@ -37,6 +40,8 @@ export class CmdHandler {
       // 2026-10-29 审批推送：优先走 HTTP（可拿到审批人姓名），失败退回 MQTT 事件
       void announceWaiting(this.dlClient, payload as any);
     }, (sessionKey: string, presetId: string) => this.dlClient.checkPermission(sessionKey, presetId), (sessionKey: string, provider: string, model: string) => this.dlClient.checkModel(sessionKey, provider, model));
+    this.sessionSync = new SessionSync(this.services, this.dlClient, logger);
+    setSessionSync(this.sessionSync);
   }
 
   private log(msg: string, type: 'info' | 'warn' | 'error' | 'debug') {
@@ -76,6 +81,8 @@ export class CmdHandler {
             // 上报失败不影响握手
           }
         })()
+        // 2026-11-04 会话索引同步：首次握手/重连后做全量，并启动 15 分钟对账
+        void this.sessionSync.start()
       })
 
       this.services.on('onAgentReply', (payload) => {
@@ -116,6 +123,8 @@ export class CmdHandler {
       // });
 
       this.services.on('onSessionsChanged', (payload) => {
+        // 2026-11-04 会话索引同步：只看变更会话，交给 SessionSync 防抖批量回推
+        this.sessionSync.observeSnapshot(payload)
         // 2026-08-28 会话变更推送（直接推客户端）：
         // 原方案 publishEventToServer 走服务端 MQTT 转发，但服务端未定义 onSessionsChanged 接收端，事件会丢；
         // 且网关 sessions.changed 是全量快照(payload 大、每条消息都触发)，不宜走服务端转发。

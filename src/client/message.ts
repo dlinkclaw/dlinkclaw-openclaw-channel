@@ -454,66 +454,15 @@ function resolveQuote(params: {
 async function resetSession({
   client,
   sessionKey,
-  streamId,
-  agentId
+  streamId
 }: {
   client: DLClient,
   sessionKey: string,
-  streamId: string,
-  agentId: string
+  streamId: string
 }) {
   //拦截/new,/reset 指令
-  //获取历史会话记录
-  const histories = await client.exeCmd({
-    cmd: 'chat.history',
-    requestId: uuidStr(36),
-    timestamp: Date.now(),
-    params: {
-      sessionKey,
-      limit: 100
-    }
-  })
-
-  if (!histories?.success || !histories.data) {
-    client.publishToServer({
-      streamId,
-      content: `[tag_error_session_history_fail]${histories?.error ?? ''}`,
-      finish: true,
-      kind: 'block'
-    });
-    return true;
-  }
-
-  //const sid: string = histories.data.sessionId;
-  const historyRecords = histories.data.messages ?? [];
-  const msgList: Array<string> = historyRecords.map((item: any) => {
-    const content = item.content;
-    if (typeof content === 'string') {
-      return `[${item.role}] ${item.content}`
-    }
-    const items: Array<string> = content.map((msg: any) => {
-      try {
-        if (msg.type === 'text') {
-          return msg.text
-        }
-      } catch (e) {
-      }
-      return ''
-    });
-    const newItems = items.filter(rec => rec.length > 0);
-    return `[${item.role}] ${newItems.join(';')}`
-  })
-
-  if (msgList.length === 0) {
-    client.publishToServer({
-      streamId,
-      content: '[tag_error_session_record_empty]',
-      finish: true,
-      kind: 'block'
-    });
-    return true;
-  }
-
+  // 2026-11-04 去掉「总结标题」：客户端重命名会话会把标题同步到插件侧，自动总结不再需要。
+  // 只做 sessions.reset，成功后通知客户端开启新会话。
   const resetResult = await client.exeCmd({
     cmd: 'sessions.reset',
     requestId: uuidStr(36),
@@ -534,45 +483,6 @@ async function resetSession({
     return true;
   }
 
-  const prompt = `请根据以下聊天记录，生成一个不超过128字的标题，概括这次对话的主题：
-          ${msgList.join('\n')}
-  
-          要求：
-          - 标题长度 ≤ 128 字
-          - 简洁准确地概括对话核心内容
-          - 直接输出标题，并在标题末尾符加上标记"[tag_reset]"，不要多余文字`;
-
-  const askAgent = await client.exeCmd({
-    cmd: 'agent.ask',
-    requestId: uuidStr(36),
-    timestamp: Date.now(),
-    params: {
-      agentId,
-      message: prompt,
-      sessionKey,
-      deliver: false,  //表示出站时不走deliver
-      idempotencyKey: uuidStr(36)
-    }
-  })
-
-  let askAgentError = ''
-  if (!askAgent?.success || !askAgent.data) {
-    askAgentError = `[tag_error_summarize_session_history_fail]\n ${askAgent?.error}`
-  }
-  const status = askAgent?.data.status;
-  if (status !== 'accepted') {
-    askAgentError = `${agentId} [tag_error_reject_session_history]`;
-  }
-  if (askAgentError && askAgentError.length > 0) {
-    client.publishToServer({
-      streamId,
-      content: askAgentError,
-      kind: 'block',
-      finish: true,
-    });
-    return true;
-  }
-  const runId = askAgent?.data.runId
   const new_sessionId = resetResult.data.entry.sessionId;
   if (new_sessionId) {
     client.publishToServer({
@@ -582,8 +492,6 @@ async function resetSession({
       kind: 'block',
       session: {
         sessionKey,
-        runId,
-        //sessionId: new_sessionId,
         archived: false
       }
     });
@@ -609,53 +517,8 @@ async function archiveSession({
   chatType: ChatType,
   channelId: string
 }) {
-  //获取历史会话记录
-  const histories = await client.exeCmd({
-    cmd: 'chat.history',
-    requestId: uuidStr(36),
-    timestamp: Date.now(),
-    params: {
-      sessionKey,
-      limit: 100
-    }
-  })
-  if (!histories?.success || !histories.data) {
-    client.publishToServer({
-      streamId,
-      content: `[tag_error_session_history_fail]${histories?.error ?? ''}`,
-      finish: true,
-      kind: 'block'
-    });
-    return;
-  }
-  const historyRecords = histories.data.messages ?? [];
-  const msgList: Array<string> = historyRecords.map((item: any) => {
-    const content = item.content;
-    if (typeof content === 'string') {
-      return `[${item.role}] ${item.content}`
-    }
-    const items: Array<string> = content.map((msg: any) => {
-      try {
-        if (msg.type === 'text') {
-          return msg.text
-        }
-      } catch (e) {
-      }
-      return ''
-    });
-    const newItems = items.filter(rec => rec.length > 0);
-    return `[${item.role}] ${newItems.join(';')}`
-  })
-
-  if (msgList.length === 0) {
-    client.publishToServer({
-      streamId,
-      content: '[tag_error_session_record_empty]',
-      finish: true,
-      kind: 'block'
-    });
-    return
-  }
+  // 2026-11-04 去掉「总结标题」：客户端重命名会话会把标题同步到插件侧，自动总结不再需要。
+  // 只做：归档旧会话 + 自动新建会话，成功后返回 tag_archive_success。
 
   //调用 sessions.archive 真正归档（不 reset，保留完整对话）
   const archiveResult = await client.exeCmd({
@@ -701,47 +564,6 @@ async function archiveSession({
 
   const newSessionKey = `agent:${agentId}:${channelId}-${newSuffix}:${chatType}:${chatId.toLowerCase()}`;
 
-  //生成标题（在新的 agent 会话中执行）
-  const prompt = `请根据以下聊天记录，生成一个不超过128字的标题，概括这次对话的主题：
-          ${msgList.join('\n')}
-  
-          要求：
-          - 标题长度 ≤ 128 字
-          - 简洁准确地概括对话核心内容
-          - 直接输出标题，并在标题末尾符加上标记"[tag_archive]"，不要多余文字`;
-
-  const askAgent = await client.exeCmd({
-    cmd: 'agent.ask',
-    requestId: uuidStr(36),
-    timestamp: Date.now(),
-    params: {
-      agentId,
-      message: prompt,
-      sessionKey,
-      deliver: false,
-      idempotencyKey: uuidStr(36)
-    }
-  })
-
-  let askAgentError = ''
-  if (!askAgent?.success || !askAgent.data) {
-    askAgentError = `[tag_error_summarize_session_history_fail]\n ${askAgent?.error}`
-  }
-  const status = askAgent?.data.status;
-  if (status !== 'accepted') {
-    askAgentError = `${agentId} [tag_error_reject_session_history]`;
-  }
-  if (askAgentError && askAgentError.length > 0) {
-    client.publishToServer({
-      streamId,
-      content: askAgentError,
-      kind: 'block',
-      finish: true,
-    });
-    return
-  }
-  const runId = askAgent?.data.runId
-
   // 返回归档成功 + 新会话 key
   client.publishToServer({
     streamId,
@@ -750,7 +572,6 @@ async function archiveSession({
     kind: 'block',
     session: {
       sessionKey,
-      runId,
       newSessionKey,
       archived: true
     }
@@ -875,8 +696,7 @@ export async function buildMessageContext(params: {
     const res = await resetSession({
       client,
       sessionKey,
-      streamId,
-      agentId
+      streamId
     })
     if (res) {
       return undefined

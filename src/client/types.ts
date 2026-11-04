@@ -227,7 +227,8 @@ export interface DLArchiveSession {
   archived: boolean,
   sessionKey: string,
   newSessionKey?: string,
-  runId: string
+  /** 2026-11-04 无总结标题任务时可为空 */
+  runId?: string
 }
 
 export type DLIMessagePayload = {

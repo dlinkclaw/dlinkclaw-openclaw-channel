@@ -43,6 +43,8 @@ export const AUTO_RELAY_PERMISSION_CHECK = "/guest/relayBot/permissionCheck";
 export const AUTO_RELAY_MODEL_CATALOG = "/guest/relayBot/modelCatalog";
 // 2026-10-31 model authorization pre-check
 export const AUTO_RELAY_MODEL_CHECK = "/guest/relayBot/modelCheck";
+// 2026-11-04 会话索引同步（插件启动/增量回推）
+export const AUTO_RELAY_SESSION_SYNC = "/guest/relayBot/agentSessionSync";
 export const AUTO_RELAY_UPLOAD = "/guest/relayBot/uploadMediaFiles";
 
 // ====== 上传文件配置常量（根据服务器性能调整）=======
