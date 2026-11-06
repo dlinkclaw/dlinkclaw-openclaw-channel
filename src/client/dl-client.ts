@@ -751,28 +751,83 @@ export class DLClient extends EventEmitter {
             throw new Error(`${channelId} account[${account.accountId}] content is empty!`);
         }
 
-        // 从 to 中解析 sessionKey（格式: dlink:user:xxx-xxx-dLink#agent:main:dlink-00001:direct:xxx）
-        const hashIdx = rawTo.lastIndexOf('#');
-        const to = hashIdx > 0 ? rawTo.substring(0, hashIdx) : rawTo;
-        const sessionKey = hashIdx > 0 ? rawTo.substring(hashIdx + 1) : undefined;
+        // 从 to 中解析 sessionKey 与渠道列表
+        // 2026-11-06 投递目标格式：
+        //   dlink:user:<empId>-<botId>[#sk=<sessionKey>][#ch=<ewx,qq,dd,feishu>]
+        //   带键段可任意省略，不会出现空段。兼容历史位置式（#<sessionKey>[#<channels>]）。
+        // ⚠️ 不能用 lastIndexOf('#'): 多段时会把渠道段误当成 sessionKey。
+        const hashParts = rawTo.split('#');
+        const to = hashParts[0];
+        let sessionKey: string | undefined;
+        let channels: Array<string> = [];
+        let channelsExplicit = false;
+        let positional = 0;
+        for (const seg of hashParts.slice(1)) {
+            const s = seg.trim();
+            if (/^sk=/i.test(s)) {
+                const v = s.slice(3).trim();
+                sessionKey = v.length > 0 ? v : undefined;
+                continue;
+            }
+            if (/^ch=/i.test(s)) {
+                channels = s.slice(3).split(',').map(v => v.trim()).filter(v => v.length > 0);
+                channelsExplicit = true;
+                continue;
+            }
+            // 历史位置式：空段也占用槽位，否则 `#<空>#ewx` 会把 ewx 误判成 sessionKey
+            if (positional === 0) {
+                sessionKey = s.length > 0 ? s : undefined;
+                positional = 1;
+            } else if (positional === 1) {
+                channels = s.split(',').map(v => v.trim()).filter(v => v.length > 0);
+                channelsExplicit = true;
+                positional = 2;
+            }
+        }
 
         const channelPrefix = new RegExp(`^${channelId}:`, "i");
         const chat_id = to.replace(channelPrefix, "");
-        const isGroup = chat_id.includes("group:");
-        const strArr = isGroup ? chat_id.replace(new RegExp('^group:', 'i'), "").split("-") : chat_id.replace(new RegExp('^user:', 'i'), "").split("-");
+        const isGroup = /^group:/i.test(chat_id);
+        const strArr = chat_id.replace(/^(group|user):/i, "").split("-");
         const chatId = strArr[0];
         const botId = strArr[1];
-        const botType = strArr[2];
-        const relayId = strArr[3];
+        // 旧格式第3段是 botType；新格式没有这一段，用渠道列表首项兜底
+        const legacyBotType = strArr.length > 2 && strArr[2] && !strArr[2].includes(':') ? strArr[2] : undefined;
+        const relayId = legacyBotType ? strArr[3] : strArr[2];
+        const botType = legacyBotType ?? channels[0] ?? 'dLink';
         const data: Record<string, string> = {
             "chatId": chatId,
             "toAgent.id": botId,
             "botType": botType,
             "group": isGroup ? "true" : "false",
             "content": text ?? '',
-            "relayId": relayId,
+            "relayId": relayId ?? '',
             "relayType": "openClaw"
         }
+        // 2026-11-06 渠道选择：只在【任务式目标】或显式写了 ch= 时才携带该字段。
+        //
+        // 为什么不能「始终携带」：
+        //   outbound.sendText 同时承载两种出站——
+        //   a) 定时任务公告：to = user:<empId>-<botId>[#sk=...][#ch=...]（2 段，无 botType）
+        //   b) 普通对话回复：to = user:<empId>-<botId>-<botType>-<relayId>#<sessionKey>（含 botType）
+        //   若对 b) 也发 channels=''，中继会理解成「只投 dLink」，把原有的第三方镜像投递砍掉（回归）。
+        // 判别式（按目标段的段数，botType 之后是否还有 relayId）：
+        //   2 段 user:<empId>-<botId>                          → 新任务式
+        //   3 段 user:<empId>-<botId>-<botType>                → 历史任务式（渠道=该 botType）
+        //   4 段 user:<empId>-<botId>-<botType>-<relayId>      → 回复式（普通/异步聊天，保持原逻辑）
+        const isReplyStyle = !!(legacyBotType && strArr.length >= 4);
+        if (channelsExplicit) {
+            data["channels"] = channels.join(',');
+        } else if (legacyBotType && !isReplyStyle) {
+            // 历史任务：原先只有一个 botType，语义就是「投这个渠道」
+            data["channels"] = legacyBotType.toLowerCase() === 'dlink' ? '' : legacyBotType;
+        } else if (!isReplyStyle) {
+            data["channels"] = channels.join(',');
+        }
+        // 2026-11-06（石头哥要求）显式区分两类消息，不再让中继靠字段缺失去推断：
+        //   任务投递 = 目标段无 botType（2 段）或历史任务式（3 段且第 3 段是 botType）
+        //   聊天回复 = 4 段（含 relayId）
+        data["msgType"] = isReplyStyle ? 'chat' : 'task';
         // 携带 sessionKey 到服务端，用于下游 Agent 路由
         if (sessionKey) {
             data["toAgent.sessionKey"] = sessionKey;
@@ -780,7 +835,12 @@ export class DLClient extends EventEmitter {
         let res;
         if (mediaFiles && mediaFiles.length > 0) {
             // 2026-11-03：非 dLink 渠道不支持文本+附件混排，先单独发文本，再单独发附件
-            if (botType !== 'dLink' && text && text.trim().length > 0) {
+            // 2026-11-06：多选渠道后，只要含任一第三方渠道就走两段式；
+            // 回复式目标（未携带 channels）回退到 botType 判断
+            const hasThirdParty = channels.length > 0
+                ? channels.some(c => c.toLowerCase() !== 'dlink')
+                : botType !== 'dLink';
+            if (hasThirdParty && text && text.trim().length > 0) {
                 await this.http.post<string>(AUTO_RELAY_API, { ...data, content: text });
                 data['content'] = '';
             }

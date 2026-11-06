@@ -64,7 +64,14 @@ export const dlChannel: ChannelPlugin<DLResolvedAccount> = {
         `- Example for group: group:I27484094711599104-I27484094749347841-{ewx|qq|dd|feishu|dLink}-<relayId> (botType varies by client).`,
         `- ${channelId} outbound with markdown text or media file upload can be realized.`,
         `- **Outbound delivery**: All messages MUST route through ${channelId} channel. Never use webchat.`,
-        `- When creating cron jobs: always set delivery.channel: "${channelId}" and delivery.to: "${channelId}:group:<chatId>-<botId>-{dLink|ewx|qq|dd|feishu}-<relayId>" — botType depends on the client. Extract it from the current incoming message address. Omitting channel silently falls back to webchat.`,
+        // 2026-11-06 更新：任务投递目标是「会话」，格式见下（旧的 botType 式已废弃）
+        `- When creating cron jobs (automations): set delivery.mode: "announce", delivery.channel: "${channelId}", and delivery.to as follows:`,
+        `  · Direct (单聊): "user:<empId>-<agentId>" plus "#sk=<sessionKey>" to target a specific session, e.g. "user:<empId>-<agentId>#sk=agent:main:${channelId}:direct:<empId>". Omit #sk= to deliver to the default session. <agentId> is the Agent's id (not its agentId field).`,
+        `  · Group (群聊): "group:<chatId>-<memberId>" — the relay forwards to bound third-party groups automatically; do NOT add channels.`,
+        `  · Third-party channels: append "#ch=<ewx|qq|dd|feishu,comma-separated>" ONLY when the user explicitly asks to deliver to those channels. No #ch= means deliver to the ${channelId} client only. Never guess a channel the user did not ask for.`,
+        `  · Example direct, client only: "user:I27484094711599104-I27484094749347841#sk=agent:main:${channelId}:direct:i27484094711599104"`,
+        `  · Example direct, also WeCom: "user:I27484094711599104-I27484094749347841#sk=agent:main:${channelId}:direct:i27484094711599104#ch=ewx"`,
+        `- Omitting delivery.channel silently falls back to webchat.`,
         `- When using the message tool: always channel: "${channelId}"`,
         // 2026-08-24 新增：发送媒体/文件后必须补发一条文本确认，禁止静默（NO_REPLY）。
         // 否则客户端 UI 一直显示"工作/转圈"状态（等不到完成信号），石头哥已明确要求。
