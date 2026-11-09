@@ -1121,7 +1121,9 @@ export async function routeAndDispatchMessage(ctx: {
         suppressDefaultToolProgressMessages: true,
         allowProgressCallbacksWhenSourceDeliverySuppressed: true,
         enableHeartbeatTool: true,
-        onAgentRunStart: (runId) => {
+        // 2026-11-07 升级 11.1：onAgentRunStart 已弃用（最后兼容日 2026-12-31），
+        // 改用 onPreparedAgentRunStart，参数从 (runId) 变为对象 { runId, executionIdentityToken?, options?, transcriptStart }。
+        onPreparedAgentRunStart: ({ runId }: { runId: string }) => {
           logger.info(`Agent run start ... runId = ${runId}`)
           client.publishProcessingState({
             streamId,

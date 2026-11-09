@@ -21,8 +21,10 @@ import { getOpenclawPath, getExtCapabilitiesDir } from '../utils.js';
 import { readEffectiveExecPreset } from '../exec-policy.js';
 import { applyModelOverrideToSessionEntry } from 'openclaw/plugin-sdk/model-session-runtime';
 // 2026-10-15 适配 openclaw 2026.10.3：config-runtime 子路径已被官方移除（2026-09-30 SDK owner 批准），
-// 下列符号现由 session-store-runtime 导出（同名、签名兼容：resolveStorePath/getSessionEntry/listSessionEntries 仍为同步，patchSessionEntry 为 async，调用处均已 await）
-import { getSessionEntry, patchSessionEntry, resolveStorePath, listSessionEntries } from 'openclaw/plugin-sdk/session-store-runtime';
+// 2026-11-09 升级 11.1：下列符号由 session-store-runtime 导出。已全部迁移到未弃用的新 API：
+//   getSessionEntryAsync / listSessionEntriesAsync / applySessionEntryPatch（旧同步版最后兼容日 2026-12-31）
+//   resolveStorePath 仍为同步且未弃用，继续使用。
+import { getSessionEntryAsync, applySessionEntryPatch, resolveStorePath, listSessionEntriesAsync } from 'openclaw/plugin-sdk/session-store-runtime';
 // 2026-09-06 适配 openclaw 2026.9.1：approveChannelPairingCode 不再导出，改走宿主 RPC（见 gateway-rpc.ts）
 import { setGatewayClient, approvePairingRequest } from './gateway-rpc.js';
 import { DEFAULT_ACCOUNT_ID } from 'openclaw/plugin-sdk/core';
@@ -599,33 +601,47 @@ export class ClawServices extends EventEmitter {
     // 而网关实际会话 key 带 chatId 后缀（agent:<agentId>:<channelId>:direct:<empId>-<botId>-<botType>）。
     // store 里同时存在两套 key 时，直接写入无后缀 key 会命中旧遗留会话，导致切模型不生效。
     // 这里先解析出真实会话 key 再 patch，保证模型覆盖写入当前真实会话。
-    const realKey = this.resolveDirectSessionKey(storePath, sessionKey, agentId, channelId);
-    await patchSessionEntry({
-      storePath,
-      sessionKey: realKey,
-      update: (entry) => {
-        if (provider && model) {
-          applyModelOverrideToSessionEntry({
-            entry,
-            selection: {
-              provider: provider,
-              model: model,
-            },
-            selectionSource: 'user',
-            markLiveSwitchPending: true, // 让当前 run 立即生效
-          });
-        }
-        // 2026-10-21：会话级推理强度写入（与模型覆盖同层持久化）
-        if (thinkOverride) {
-          entry.thinkingLevel = thinkOverride;
-        }
-        // 2026-11-04 客户端重命名：写入插件侧会话 displayName
-        if (displayName) {
-          (entry as any).displayName = displayName;
-        }
-        return { ...entry };
-      },
-    });
+    const realKey = await this.resolveDirectSessionKey(storePath, sessionKey, agentId, channelId);
+    // 2026-11-09 升级 11.1：patchSessionEntry 已弃用（最后兼容 2026-12-31），
+    // 改用 applySessionEntryPatch。语义差异：旧 API 传 update 回调（改整个 entry 再写回），
+    // 新 API 传 patch 字段差分。为保持原有行为，先在内存副本上算好目标字段，再传差分。
+    const currentEntry = await getSessionEntryAsync({ storePath, sessionKey: realKey });
+    const draftEntry: any = { ...(currentEntry ?? {}) };
+    if (provider && model) {
+      applyModelOverrideToSessionEntry({
+        entry: draftEntry,
+        selection: {
+          provider: provider,
+          model: model,
+        },
+        selectionSource: 'user',
+        markLiveSwitchPending: true, // 让当前 run 立即生效
+      });
+    }
+    // 2026-10-21：会话级推理强度写入（与模型覆盖同层持久化）
+    if (thinkOverride) {
+      draftEntry.thinkingLevel = thinkOverride;
+    }
+    // 2026-11-04 客户端重命名：写入插件侧会话 displayName
+    if (displayName) {
+      draftEntry.displayName = displayName;
+    }
+    // 只提交本次真正改动过的字段，避免覆盖并发写入
+    const patch: Record<string, unknown> = {};
+    for (const key of Object.keys(draftEntry)) {
+      const before = (currentEntry as any)?.[key];
+      const after = draftEntry[key];
+      if (JSON.stringify(before) !== JSON.stringify(after)) {
+        patch[key] = after;
+      }
+    }
+    if (Object.keys(patch).length > 0) {
+      await applySessionEntryPatch({
+        storePath,
+        sessionKey: realKey,
+        patch: patch as any,
+      });
+    }
     // 2026-11-04 同步会话索引（中继侧 titleSource=user）
     if (displayName) {
       getSessionSync()?.setDisplayName(sessionKey, displayName);
@@ -641,17 +657,19 @@ export class ClawServices extends EventEmitter {
    * 导致 sessions.currentModel 返回旧模型、sessions.patch 写入旧会话。
    * 策略：先精确匹配传入 key；查不到 entry 时，用前缀匹配 store 中 updatedAt 最新的 direct 会话。
    */
-  private resolveDirectSessionKey(storePath: string, sessionKey: string, agentId: string, channelId: string): string {
+  private async resolveDirectSessionKey(storePath: string, sessionKey: string, agentId: string, channelId: string): Promise<string> {
     // 1. 精确匹配先记下来，但不直接返回：旧的无后缀 key 可能仍存在，
     //    直接写入会命中过期会话（表现为「切了模型但下一条消息仍用旧模型」）。
-    const exact = getSessionEntry({ storePath, sessionKey });
+    // 2026-11-07 升级 11.1：getSessionEntry 已弃用（最后兼容日 2026-12-31），改用 getSessionEntryAsync
+    const exact = await getSessionEntryAsync({ storePath, sessionKey });
     const exactUpdated = exact
       ? Number((exact as any).updatedAt ?? (exact as any).lastActivityAt ?? 0)
       : -1;
     // 2. 前缀匹配：agent:<agentId>:<channelId>:direct:<...> 开头的最新会话
     const prefix = `agent:${agentId}:${channelId}:direct:`;
     try {
-      const summaries = listSessionEntries({ storePath });
+      // 2026-11-09 升级 11.1：listSessionEntries 已弃用（最后兼容 2026-12-31），改用异步版
+      const summaries = await listSessionEntriesAsync({ agentId, storePath });
       let bestKey = '';
       let bestUpdated = -1;
       for (const s of summaries) {
@@ -687,8 +705,8 @@ export class ClawServices extends EventEmitter {
     const { cfg, channelId } = this.options;
     const storePath = resolveStorePath(cfg.session?.store, { agentId });
     // 兼容历史遗留的无后缀 key：精确命中失败时前缀匹配最新 direct 会话
-    const realKey = this.resolveDirectSessionKey(storePath, sessionKey, agentId, channelId);
-    const entry = getSessionEntry({ storePath, sessionKey: realKey });
+    const realKey = await this.resolveDirectSessionKey(storePath, sessionKey, agentId, channelId);
+    const entry = await getSessionEntryAsync({ storePath, sessionKey: realKey });
     if (!entry) return null;
 
     // 只返回用户主动设置的覆盖，不返回 auto fallback
